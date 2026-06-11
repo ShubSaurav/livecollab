@@ -292,6 +292,7 @@
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 14px;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4), inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+  z-index: 20;
 }
 
 .tool-btn {
@@ -564,7 +565,7 @@
   flex-direction: column;
   gap: 0.8rem;
   width: 220px;
-  z-index: 15;
+  z-index: 25;
   background: rgba(11, 15, 25, 0.85) !important;
   backdrop-filter: blur(16px);
   border: 1px solid rgba(255, 255, 255, 0.08);

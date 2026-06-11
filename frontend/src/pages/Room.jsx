@@ -18,6 +18,7 @@ const Room = () => {
   
   const [activeLeftTab, setActiveLeftTab] = useState('chat');
   const [activeTool, setActiveTool] = useState('pen'); // default to pen drawing
+  const [showBrushPanel, setShowBrushPanel] = useState(true);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(true);
   
   const [ws, setWs] = useState(null);
@@ -72,6 +73,25 @@ const Room = () => {
   const [shapeType, setShapeType] = useState('rect'); // rect or circle
   const [drawActions, setDrawActions] = useState([]);
   const [isDrawing, setIsDrawing] = useState(false);
+
+  const selectTool = (tool, shape = null) => {
+    if (tool === 'pen' || tool === 'eraser' || tool === 'shape') {
+      if (activeTool === tool && (tool !== 'shape' || shapeType === shape)) {
+        // Toggle panel open/close if clicking the same active tool & shape configuration
+        setShowBrushPanel(prev => !prev);
+      } else {
+        // Open panel and set active tool
+        setActiveTool(tool);
+        setShowBrushPanel(true);
+        if (shape) {
+          setShapeType(shape);
+        }
+      }
+    } else {
+      setActiveTool(tool);
+      setShowBrushPanel(false);
+    }
+  };
 
   // Sticky Notes States
   const [stickyNotes, setStickyNotes] = useState([]);
@@ -963,15 +983,15 @@ const Room = () => {
 
             {/* Whiteboard Toolbar */}
             <div className="glass-card whiteboard-toolbar">
-              <button title="Select / Move Sticky Notes" onClick={()=>setActiveTool('cursor')} className={`tool-btn bounce-hover ${activeTool==='cursor'?'active':''}`}><MousePointer2 size={18} /></button>
+              <button title="Select / Move Sticky Notes" onClick={()=>selectTool('cursor')} className={`tool-btn bounce-hover ${activeTool==='cursor'?'active':''}`}><MousePointer2 size={18} /></button>
               <div className="tool-divider"></div>
               
-              <button title="Pen Drawing" onClick={()=>setActiveTool('pen')} className={`tool-btn bounce-hover ${activeTool==='pen'?'active':''}`}><Pen size={18} /></button>
-              <button title="Eraser Brush" onClick={()=>setActiveTool('eraser')} className={`tool-btn bounce-hover ${activeTool==='eraser'?'active':''}`}><Eraser size={18} /></button>
+              <button title="Pen Drawing" onClick={()=>selectTool('pen')} className={`tool-btn bounce-hover ${activeTool==='pen'?'active':''}`}><Pen size={18} /></button>
+              <button title="Eraser Brush" onClick={()=>selectTool('eraser')} className={`tool-btn bounce-hover ${activeTool==='eraser'?'active':''}`}><Eraser size={18} /></button>
               <div className="tool-divider"></div>
               
-              <button title="Rectangle Shape" onClick={()=>{setActiveTool('shape'); setShapeType('rect');}} className={`tool-btn bounce-hover ${activeTool==='shape' && shapeType==='rect'?'active':''}`}><Square size={18} /></button>
-              <button title="Circle Shape" onClick={()=>{setActiveTool('shape'); setShapeType('circle');}} className={`tool-btn bounce-hover ${activeTool==='shape' && shapeType==='circle'?'active':''}`}><Circle size={18} /></button>
+              <button title="Rectangle Shape" onClick={()=>selectTool('shape', 'rect')} className={`tool-btn bounce-hover ${activeTool==='shape' && shapeType==='rect'?'active':''}`}><Square size={18} /></button>
+              <button title="Circle Shape" onClick={()=>selectTool('shape', 'circle')} className={`tool-btn bounce-hover ${activeTool==='shape' && shapeType==='circle'?'active':''}`}><Circle size={18} /></button>
               <div className="tool-divider"></div>
               
               <div className="sticky-creators">
@@ -985,9 +1005,36 @@ const Room = () => {
               <button title="Clear Whiteboard" onClick={clearWhiteboard} className="tool-btn bounce-hover text-danger"><Trash2 size={18} /></button>
             </div>
 
-            {/* Brush Controls Panel (Visible when Pen/Shape is active) */}
-            {(activeTool === 'pen' || activeTool === 'shape' || activeTool === 'eraser') && (
+            {/* Brush Controls Panel (Visible when Pen/Shape is active and showBrushPanel is true) */}
+            {showBrushPanel && (activeTool === 'pen' || activeTool === 'shape' || activeTool === 'eraser') && (
               <div className="glass-card brush-controls-panel">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                  <span className="section-label" style={{ margin: 0 }}>
+                    {activeTool === 'pen' ? 'Pen Brush' : activeTool === 'eraser' ? 'Eraser' : `Shape (${shapeType})`}
+                  </span>
+                  <button 
+                    title="Close Panel"
+                    onClick={() => setShowBrushPanel(false)}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'rgba(255, 255, 255, 0.4)',
+                      fontSize: '1.2rem',
+                      cursor: 'pointer',
+                      lineHeight: 1,
+                      padding: '0 4px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      transition: 'color 0.2s'
+                    }}
+                    onMouseEnter={e => e.target.style.color = '#ef4444'}
+                    onMouseLeave={e => e.target.style.color = 'rgba(255, 255, 255, 0.4)'}
+                  >
+                    ×
+                  </button>
+                </div>
+                
                 {activeTool !== 'eraser' && (
                   <div className="control-section">
                     <span className="section-label">Color:</span>
