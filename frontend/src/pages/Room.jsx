@@ -47,6 +47,10 @@ const Room = () => {
 
   // Screen Share Window Refs & States
   const [screenStream, setScreenStream] = useState(null);
+  const screenStreamRef = useRef(null);
+  useEffect(() => {
+    screenStreamRef.current = screenStream;
+  }, [screenStream]);
   const [screenPosition, setScreenPosition] = useState({ x: 120, y: 120 });
   const [screenSize, setScreenSize] = useState({ width: 420, height: 260 });
   const [isDraggingScreen, setIsDraggingScreen] = useState(false);
@@ -250,6 +254,18 @@ const Room = () => {
     return () => {
       window.removeEventListener('resize', handleResize);
       clearTimeout(t);
+    };
+  }, []);
+
+  // Cleanup WebRTC camera/mic and screen sharing streams on unmount to prevent leaks
+  useEffect(() => {
+    return () => {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(t => t.stop());
+      }
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach(t => t.stop());
+      }
     };
   }, []);
 
@@ -478,7 +494,7 @@ const Room = () => {
       id: Math.random().toString(36).substring(2, 10),
       x: 200 + Math.random() * 200,
       y: 150 + Math.random() * 150,
-      text: 'Double click to edit note',
+      text: '',
       color: bgColors[colorName] || '#fef08a',
       colorName
     };
