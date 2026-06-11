@@ -5,7 +5,7 @@ import {
   Pen, Type, StickyNote, Image as ImageIcon, Square, Circle, Eraser, Undo, Redo, MousePointer2,
   Sparkles, ListTodo, FileText, CheckSquare, MessageCircle,
   Mic, MicOff, Video, VideoOff, MonitorUp, PhoneOff, Hand, Settings,
-  Link, UserPlus, MoreHorizontal, Maximize2, Trash2, Send
+  Link, UserPlus, MoreHorizontal, Maximize2, Trash2, Send, Download, Grid
 } from 'lucide-react';
 import { wsBaseUrl } from '../config';
 import { ThemeContext } from '../App';
@@ -29,10 +29,42 @@ const Room = () => {
   const [joinError, setJoinError] = useState('');
   
   const [mediaState, setMediaState] = useState({
-    mic: true,
-    camera: true,
+    mic: false,
+    camera: false,
     screen: false
   });
+
+  const [handRaised, setHandRaised] = useState(false);
+  const [raisedHands, setRaisedHands] = useState({});
+  const [gridType, setGridType] = useState('dotted'); // 'dotted', 'lines', 'none'
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
+
+  // Media Refs & States
+  const localStreamRef = useRef(null);
+  const localVideoRef = useRef(null);
+  const [hasCameraPermission, setHasCameraPermission] = useState(false);
+
+  // Screen Share Window Refs & States
+  const [screenStream, setScreenStream] = useState(null);
+  const [screenPosition, setScreenPosition] = useState({ x: 120, y: 120 });
+  const [screenSize, setScreenSize] = useState({ width: 420, height: 260 });
+  const [isDraggingScreen, setIsDraggingScreen] = useState(false);
+  const screenDragStart = useRef({ x: 0, y: 0 });
+  
+  const [isResizingScreen, setIsResizingScreen] = useState(false);
+  const screenResizeStart = useRef({ x: 0, y: 0, width: 0, height: 0 });
+
+  const localVideoRefCallback = (el) => {
+    if (el && localStreamRef.current) {
+      el.srcObject = localStreamRef.current;
+    }
+  };
+
+  const screenVideoRefCallback = (el) => {
+    if (el && screenStream) {
+      el.srcObject = screenStream;
+    }
+  };
 
   // Canvas Whiteboard States
   const [brushColor, setBrushColor] = useState('#818cf8'); // default indigo
@@ -149,6 +181,11 @@ const Room = () => {
         }));
       } else if (data.type === 'sticky_delete') {
         setStickyNotes(prev => prev.filter(n => n.id !== data.noteId));
+      } else if (data.type === 'raise_hand') {
+        setRaisedHands(prev => ({ ...prev, [data.senderId]: data.raised }));
+        if (data.raised) {
+          setMessages(prev => [...prev, { type: 'system', text: `User ${data.senderId.slice(0, 4)} raised their hand ✋` }]);
+        }
       }
     };
 
@@ -555,9 +592,214 @@ const Room = () => {
     }
   };
 
-  const toggleMedia = (type) => {
-    setMediaState(prev => ({ ...prev, [type]: !prev[type] }));
+  const initMediaStream = async (audioEnabled, videoEnabled) => {
+    try {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(t => t.stop());
+      }
+      
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true
+      });
+      
+      localStreamRef.current = stream;
+      stream.getAudioTracks().forEach(t => t.enabled = audioEnabled);
+      stream.getVideoTracks().forEach(t => t.enabled = videoEnabled);
+      
+      setHasCameraPermission(true);
+    } catch (err) {
+      console.warn("Could not access camera/mic:", err);
+      setHasCameraPermission(false);
+      setMediaState(prev => ({ ...prev, camera: false, mic: false }));
+    }
   };
+
+  const stopLocalStream = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(t => t.stop());
+      localStreamRef.current = null;
+    }
+    setHasCameraPermission(false);
+  };
+
+  const toggleMedia = async (type) => {
+    if (type === 'mic') {
+      const nextMicState = !mediaState.mic;
+      setMediaState(prev => ({ ...prev, mic: nextMicState }));
+      if (localStreamRef.current) {
+        localStreamRef.current.getAudioTracks().forEach(t => t.enabled = nextMicState);
+      } else if (nextMicState) {
+        await initMediaStream(nextMicState, mediaState.camera);
+      }
+    } else if (type === 'camera') {
+      const nextCamState = !mediaState.camera;
+      setMediaState(prev => ({ ...prev, camera: nextCamState }));
+      if (localStreamRef.current) {
+        localStreamRef.current.getVideoTracks().forEach(t => t.enabled = nextCamState);
+        if (!nextCamState && !mediaState.mic) {
+          stopLocalStream();
+        }
+      } else if (nextCamState) {
+        await initMediaStream(mediaState.mic, nextCamState);
+      }
+    } else if (type === 'screen') {
+      if (mediaState.screen) {
+        stopScreenShare();
+      } else {
+        await startScreenShare();
+      }
+    }
+  };
+
+  const startScreenShare = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      setScreenStream(stream);
+      setMediaState(prev => ({ ...prev, screen: true }));
+      stream.getVideoTracks()[0].onended = () => {
+        stopScreenShare();
+      };
+    } catch (err) {
+      console.warn("Screen sharing failed:", err);
+      setMediaState(prev => ({ ...prev, screen: false }));
+    }
+  };
+
+  const stopScreenShare = () => {
+    if (screenStream) {
+      screenStream.getTracks().forEach(t => t.stop());
+      setScreenStream(null);
+    }
+    setMediaState(prev => ({ ...prev, screen: false }));
+  };
+
+  // Draggable Screen Share Window Handlers
+  const handleScreenDragStart = (e) => {
+    e.preventDefault();
+    setIsDraggingScreen(true);
+    screenDragStart.current = {
+      x: e.clientX - screenPosition.x,
+      y: e.clientY - screenPosition.y
+    };
+    e.target.setPointerCapture(e.pointerId);
+  };
+
+  const handleScreenDragMove = (e) => {
+    if (!isDraggingScreen) return;
+    const newX = e.clientX - screenDragStart.current.x;
+    const newY = e.clientY - screenDragStart.current.y;
+    setScreenPosition({ x: newX, y: newY });
+  };
+
+  const handleScreenDragEnd = (e) => {
+    setIsDraggingScreen(false);
+  };
+
+  const handleScreenResizeStart = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingScreen(true);
+    screenResizeStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      width: screenSize.width,
+      height: screenSize.height
+    };
+    e.target.setPointerCapture(e.pointerId);
+  };
+
+  const handleScreenResizeMove = (e) => {
+    if (!isResizingScreen) return;
+    const deltaX = e.clientX - screenResizeStart.current.x;
+    const deltaY = e.clientY - screenResizeStart.current.y;
+    setScreenSize({
+      width: Math.max(200, screenResizeStart.current.width + deltaX),
+      height: Math.max(150, screenResizeStart.current.height + deltaY)
+    });
+  };
+
+  const handleScreenResizeEnd = (e) => {
+    setIsResizingScreen(false);
+  };
+
+  // Raise Hand Handler
+  const toggleRaiseHand = () => {
+    const nextState = !handRaised;
+    setHandRaised(nextState);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'raise_hand', raised: nextState, roomId }));
+    }
+  };
+
+  // Offscreen draw helpers for export
+  const drawDottedGrid = (canvas, ctx) => {
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+    const size = 20;
+    for (let x = 0; x < canvas.width; x += size) {
+      for (let y = 0; y < canvas.height; y += size) {
+        ctx.beginPath();
+        ctx.arc(x, y, 1.2, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+    }
+  };
+
+  const drawLinesGrid = (canvas, ctx) => {
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+    ctx.lineWidth = 1;
+    const size = 20;
+    for (let x = 0; x < canvas.width; x += size) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, canvas.height);
+      ctx.stroke();
+    }
+    for (let y = 0; y < canvas.height; y += size) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(canvas.width, y);
+      ctx.stroke();
+    }
+  };
+
+  // Export board as PNG
+  const exportBoardAsPng = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = canvas.width;
+    exportCanvas.height = canvas.height;
+    const exportCtx = exportCanvas.getContext('2d');
+    
+    // Background Slate
+    exportCtx.fillStyle = '#0b0f19'; // clean dark editor slate color
+    exportCtx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+    
+    if (gridType === 'dotted') {
+      drawDottedGrid(exportCanvas, exportCtx);
+    } else if (gridType === 'lines') {
+      drawLinesGrid(exportCanvas, exportCtx);
+    }
+    
+    // Copy main drawings
+    exportCtx.drawImage(canvas, 0, 0);
+    
+    const link = document.createElement('a');
+    link.download = `livecollab-board-${roomId}-${Date.now()}.png`;
+    link.href = exportCanvas.toDataURL('image/png');
+    link.click();
+    setIsMoreMenuOpen(false);
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopLocalStream();
+      stopScreenShare();
+    };
+  }, []);
 
   const copyRoomLink = () => {
     navigator.clipboard.writeText(window.location.href);
@@ -674,19 +916,36 @@ const Room = () => {
         </aside>
 
         {/* Center Canvas */}
-        <main className="canvas-area">
+        <main className={`canvas-area ${gridType}-grid`}>
           {/* Top Floating Video Strip */}
           <div className="video-strip">
-            {mediaState.camera && (
-              <div className="video-tile active bounce-hover">
+            {/* Local Video Tile */}
+            <div className={`video-tile bounce-hover ${mediaState.camera ? 'active' : ''} ${handRaised ? 'raised-hand-glow' : ''}`}>
+              {mediaState.camera && hasCameraPermission ? (
+                <video 
+                  ref={localVideoRefCallback} 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                  className="video-feed" 
+                />
+              ) : (
                 <div className="video-placeholder me-cam">ME</div>
-                <div className="tile-name">You {!mediaState.mic && <MicOff size={12} style={{marginLeft:'4px'}} color="#ef4444"/>}</div>
+              )}
+              <div className="tile-name">
+                You {!mediaState.mic && <MicOff size={11} style={{marginLeft:'4px'}} color="#ef4444"/>}
+                {handRaised && <span className="hand-badge" style={{marginLeft: '6px'}}>✋</span>}
               </div>
-            )}
-            {roomUsers > 1 && mediaState.camera && (
-              <div className="video-tile bounce-hover">
+            </div>
+
+            {/* Remote Video Tile */}
+            {roomUsers > 1 && (
+              <div className={`video-tile bounce-hover ${Object.keys(raisedHands).some(id => raisedHands[id]) ? 'raised-hand-glow' : ''}`}>
                 <div className="video-placeholder other-cam">U1</div>
-                <div className="tile-name">Remote <MicOff size={12} className="text-secondary" style={{marginLeft: '4px'}}/></div>
+                <div className="tile-name">
+                  Remote <MicOff size={11} className="text-secondary" style={{marginLeft: '4px'}}/>
+                  {Object.keys(raisedHands).some(id => raisedHands[id]) && <span className="hand-badge" style={{marginLeft: '6px'}}>✋</span>}
+                </div>
               </div>
             )}
           </div>
@@ -804,6 +1063,48 @@ const Room = () => {
                 return null;
               })}
             </div>
+
+            {/* Draggable, Resizable Screen Share Window */}
+            {mediaState.screen && screenStream && (
+              <div 
+                className="glass floating-screen-share"
+                style={{
+                  left: `${screenPosition.x}px`,
+                  top: `${screenPosition.y}px`,
+                  width: `${screenSize.width}px`,
+                  height: `${screenSize.height}px`,
+                  position: 'absolute',
+                  zIndex: 1000
+                }}
+              >
+                <div 
+                  className="screen-share-header"
+                  onPointerDown={handleScreenDragStart}
+                  onPointerMove={handleScreenDragMove}
+                  onPointerUp={handleScreenDragEnd}
+                >
+                  <div className="flex-center" style={{display: 'flex', alignItems: 'center'}}>
+                    <span className="live-dot" style={{marginRight:'6px'}}></span>
+                    <span className="text-sm font-semibold">Your Screen Share</span>
+                  </div>
+                  <button className="close-btn" onClick={stopScreenShare}>×</button>
+                </div>
+                <div className="screen-share-video-wrap">
+                  <video 
+                    ref={screenVideoRefCallback}
+                    autoPlay 
+                    playsInline 
+                    muted 
+                  />
+                </div>
+                <div 
+                  className="screen-share-resize-handle"
+                  onPointerDown={handleScreenResizeStart}
+                  onPointerMove={handleScreenResizeMove}
+                  onPointerUp={handleScreenResizeEnd}
+                />
+              </div>
+            )}
           </div>
         </main>
 
@@ -877,8 +1178,41 @@ const Room = () => {
           <button title="Share Screen" className={`control-btn bounce-hover ${mediaState.screen ? 'active-share' : ''}`} onClick={() => toggleMedia('screen')}>
             <MonitorUp size={22} />
           </button>
-          <button title="Raise Hand" className="control-btn bounce-hover"><Hand size={22} /></button>
-          <button title="More Options" className="control-btn bounce-hover"><MoreHorizontal size={22} /></button>
+          <button 
+            title="Raise Hand" 
+            className={`control-btn bounce-hover ${handRaised ? 'active-hand' : ''}`} 
+            onClick={toggleRaiseHand}
+          >
+            <Hand size={22} />
+          </button>
+          
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <button 
+              title="More Options" 
+              className={`control-btn bounce-hover ${isMoreMenuOpen ? 'active-more' : ''}`} 
+              onClick={() => setIsMoreMenuOpen(!isMoreMenuOpen)}
+            >
+              <MoreHorizontal size={22} />
+            </button>
+            {isMoreMenuOpen && (
+              <div className="glass more-options-menu">
+                <button className="menu-item" onClick={exportBoardAsPng}>
+                  <Download size={16} style={{marginRight: '8px'}} /> Export Board as PNG
+                </button>
+                <button className="menu-item" onClick={() => {
+                  const nextGrids = { 'dotted': 'lines', 'lines': 'none', 'none': 'dotted' };
+                  setGridType(nextGrids[gridType]);
+                  setIsMoreMenuOpen(false);
+                }}>
+                  <Grid size={16} style={{marginRight: '8px'}} /> Grid: {gridType.toUpperCase()}
+                </button>
+                <button className="menu-item text-danger" onClick={() => { setIsMoreMenuOpen(false); clearWhiteboard(); }}>
+                  <Trash2 size={16} style={{marginRight: '8px'}} /> Clear Whiteboard
+                </button>
+              </div>
+            )}
+          </div>
+
           <button title="End Session" className="control-btn end-call bounce-hover" onClick={() => navigate('/dashboard')}><PhoneOff size={22} /></button>
         </div>
 
@@ -886,7 +1220,22 @@ const Room = () => {
           <button title="Toggle AI Panel" className={`control-btn text-btn bounce-hover ${isAiPanelOpen ? 'active-toggle' : ''}`} onClick={() => setIsAiPanelOpen(!isAiPanelOpen)}>
             <Sparkles size={18} style={{marginRight:'0.4rem'}}/> AI
           </button>
-          <button title="Settings" className="control-btn bounce-hover"><Settings size={20} /></button>
+          <button 
+            title="Settings" 
+            className="control-btn bounce-hover"
+            onClick={() => {
+              const newName = prompt("Enter your name:", JSON.parse(localStorage.getItem('user') || '{}').name || "User");
+              if (newName) {
+                const userObj = JSON.parse(localStorage.getItem('user') || '{}');
+                userObj.name = newName;
+                localStorage.setItem('user', JSON.stringify(userObj));
+                alert("Username updated to: " + newName);
+                window.location.reload();
+              }
+            }}
+          >
+            <Settings size={20} />
+          </button>
         </div>
       </footer>
     </div>

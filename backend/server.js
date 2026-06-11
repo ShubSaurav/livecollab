@@ -406,6 +406,13 @@ wss.on('connection', (ws, req) => {
             broadcast(currentRoom, { ...data, senderId: clientId }, ws);
           }
           break;
+
+        default:
+          // For generic real-time events that don't need database persistence (e.g., raise_hand, media_update)
+          if (currentRoom && roomsMap.has(currentRoom)) {
+            broadcast(currentRoom, { ...data, senderId: clientId }, ws);
+          }
+          break;
       }
     } catch (e) {
       console.error('Failed to parse message', e);
