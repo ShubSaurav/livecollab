@@ -111,6 +111,11 @@ const Room = () => {
   const startPointRef = useRef({ x: 0, y: 0 });
   const currentPathRef = useRef([]);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const drawActionsRef = useRef([]);
+
+  useEffect(() => {
+    drawActionsRef.current = drawActions;
+  }, [drawActions]);
 
   // WebSockets Setup
   useEffect(() => {
@@ -218,15 +223,22 @@ const Room = () => {
     return () => socket.close();
   }, [roomId, navigate]);
 
-  // Handle Resize and Initial Canvas Setup
+  // Handle Resize and Initial Canvas Setup (Optimized to prevent flickering)
   useEffect(() => {
     const handleResize = () => {
       const canvas = canvasRef.current;
       if (canvas && boardRef.current) {
         const rect = boardRef.current.getBoundingClientRect();
-        canvas.width = rect.width;
-        canvas.height = rect.height;
-        redrawCanvas(drawActions);
+        const targetWidth = Math.floor(rect.width);
+        const targetHeight = Math.floor(rect.height);
+        
+        // Only set width and height if the size has actually changed.
+        // This avoids clearing the canvas context and flickering on draw updates.
+        if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          redrawCanvas(drawActionsRef.current);
+        }
       }
     };
 
@@ -239,7 +251,7 @@ const Room = () => {
       window.removeEventListener('resize', handleResize);
       clearTimeout(t);
     };
-  }, [drawActions]);
+  }, []);
 
   // Auto-scroll chats
   useEffect(() => {
