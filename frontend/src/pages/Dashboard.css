@@ -301,17 +301,19 @@
 .text-xs { font-size: 0.75rem; }
 
 .bounce-hover {
-  transition: none;
+  transition: transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.2s ease, border-color 0.2s ease;
 }
 .bounce-hover:hover {
-  transform: none;
+  transform: translateY(-4px) scale(1.01);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
+  border-color: var(--accent-primary);
 }
 
 /* Skeleton Loaders */
 .skeleton-box {
   background: linear-gradient(90deg, var(--border-color) 25%, var(--bg-color) 50%, var(--border-color) 75%);
   background-size: 200% 100%;
-  animation: none;
+  animation: shimmer 1.5s infinite linear;
 }
 
 .skeleton-text {
@@ -319,14 +321,15 @@
   border-radius: 4px;
   background: linear-gradient(90deg, var(--border-color) 25%, var(--bg-color) 50%, var(--border-color) 75%);
   background-size: 200% 100%;
-  animation: none;
+  animation: shimmer 1.5s infinite linear;
   margin-bottom: 0.5rem;
 }
 
 @keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
 }
+
 
 /* Empty States */
 .empty-state {

@@ -25,7 +25,10 @@ const wss = new WebSocket.Server({ server, path: '/connect' });
 if (!process.env.MONGO_URI) {
   console.warn('MONGO_URI is missing. Database-backed features will fail until configured.');
 } else {
-  mongoose.connect(process.env.MONGO_URI)
+  mongoose.set('bufferCommands', false);
+  mongoose.connect(process.env.MONGO_URI, {
+    serverSelectionTimeoutMS: 3000
+  })
     .then(() => console.log('MongoDB connected successfully'))
     .catch(err => console.error('MongoDB connection error:', err));
 }
@@ -78,15 +81,27 @@ app.post('/api/auth/google', async (req, res) => {
     const payload = ticket.getPayload();
     
     // Upsert User
-    let user = await User.findOne({ googleId: payload.sub });
-    if (!user) {
-      user = new User({
+    let user = null;
+    if (mongoose.connection.readyState === 1) {
+      user = await User.findOne({ googleId: payload.sub });
+      if (!user) {
+        user = new User({
+          googleId: payload.sub,
+          email: payload.email,
+          name: payload.name,
+          picture: payload.picture
+        });
+        await user.save();
+      }
+    } else {
+      console.log('MongoDB offline. Simulating in-memory user for Google Login.');
+      user = {
         googleId: payload.sub,
         email: payload.email,
         name: payload.name,
-        picture: payload.picture
-      });
-      await user.save();
+        picture: payload.picture,
+        _id: `temp_${payload.sub}`
+      };
     }
     
     res.json({ success: true, user });
@@ -150,6 +165,8 @@ async function handleCreateRoom(req, res) {
       title: roomTitle,
       clients: new Set(),
       history: [],
+      drawActions: [],
+      stickyNotes: [],
       peakParticipants: 0
     });
 
@@ -242,18 +259,26 @@ app.get('/api/dashboard', async (req, res) => {
 
 // History
 app.get('/api/history', async (req, res) => {
-  const sessions = await Session.find().sort({ date: -1 }).limit(10).lean();
-  const normalizedSessions = sessions.map((session) => ({
-    id: String(session._id),
-    roomId: session.roomId,
-    title: session.title,
-    date: session.date,
-    duration: session.durationStr || 'Session ended',
-    participants: session.participantsCount || 1,
-    aiSummary: session.aiSummary || 'No summary generated yet.',
-    recordingAvailable: Boolean(session.recordingAvailable)
-  }));
-  res.json({ sessions: normalizedSessions });
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.json({ sessions: [] });
+    }
+    const sessions = await Session.find().sort({ date: -1 }).limit(10).lean();
+    const normalizedSessions = sessions.map((session) => ({
+      id: String(session._id),
+      roomId: session.roomId,
+      title: session.title,
+      date: session.date,
+      duration: session.durationStr || 'Session ended',
+      participants: session.participantsCount || 1,
+      aiSummary: session.aiSummary || 'No summary generated yet.',
+      recordingAvailable: Boolean(session.recordingAvailable)
+    }));
+    res.json({ sessions: normalizedSessions });
+  } catch (error) {
+    console.error('Failed to fetch history:', error);
+    res.json({ sessions: [] });
+  }
 });
 
 // WebSocket Handler
@@ -276,7 +301,9 @@ wss.on('connection', (ws, req) => {
               type: 'joined', 
               clientId, 
               roomId: currentRoom,
-              history: roomData.history 
+              history: roomData.history || [],
+              drawActions: roomData.drawActions || [],
+              stickyNotes: roomData.stickyNotes || []
             }));
             
             broadcast(currentRoom, {
@@ -286,31 +313,97 @@ wss.on('connection', (ws, req) => {
             }, ws);
           } else {
             // Check DB
-            Room.findOne({ roomId: data.roomId }).then(dbRoom => {
-               if(dbRoom) {
-                  roomsMap.set(data.roomId, {
-                     title: dbRoom.title,
-                     clients: new Set([ws]),
-                    history: [],
-                    peakParticipants: 1
-                  });
-                  currentRoom = data.roomId;
-                  ws.send(JSON.stringify({ type: 'joined', clientId, roomId: currentRoom, history: [] }));
-               } else {
-                  ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }));
-               }
-            });
+            if (mongoose.connection.readyState === 1) {
+              Room.findOne({ roomId: data.roomId }).then(dbRoom => {
+                 if(dbRoom) {
+                    roomsMap.set(data.roomId, {
+                       title: dbRoom.title,
+                       clients: new Set([ws]),
+                       history: [],
+                       drawActions: [],
+                       stickyNotes: [],
+                       peakParticipants: 1
+                    });
+                    currentRoom = data.roomId;
+                    ws.send(JSON.stringify({ 
+                      type: 'joined', 
+                      clientId, 
+                      roomId: currentRoom, 
+                      history: [],
+                      drawActions: [],
+                      stickyNotes: [] 
+                    }));
+                 } else {
+                    ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }));
+                 }
+              }).catch(err => {
+                 console.error('Error finding room in DB:', err);
+                 ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }));
+              });
+            } else {
+              ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }));
+            }
           }
           break;
           
         case 'chat':
-        case 'draw':
         case 'cursor':
           if (currentRoom && roomsMap.has(currentRoom)) {
             broadcast(currentRoom, { ...data, senderId: clientId }, ws);
             if (data.type === 'chat') {
                roomsMap.get(currentRoom).history.push({...data, senderId: clientId});
             }
+          }
+          break;
+
+        case 'draw':
+          if (currentRoom && roomsMap.has(currentRoom)) {
+            broadcast(currentRoom, { ...data, senderId: clientId }, ws);
+            // Save drawings if final (not a preview)
+            if (data.action && !data.isPreview) {
+              const room = roomsMap.get(currentRoom);
+              if (!room.drawActions) room.drawActions = [];
+              room.drawActions.push(data.action);
+            }
+          }
+          break;
+
+        case 'clear_board':
+          if (currentRoom && roomsMap.has(currentRoom)) {
+            const room = roomsMap.get(currentRoom);
+            room.drawActions = [];
+            room.stickyNotes = [];
+            broadcast(currentRoom, { type: 'clear_board' }, ws);
+          }
+          break;
+
+        case 'sticky_create':
+          if (currentRoom && roomsMap.has(currentRoom)) {
+            const room = roomsMap.get(currentRoom);
+            if (!room.stickyNotes) room.stickyNotes = [];
+            room.stickyNotes.push(data.note);
+            broadcast(currentRoom, { ...data, senderId: clientId }, ws);
+          }
+          break;
+
+        case 'sticky_update':
+          if (currentRoom && roomsMap.has(currentRoom)) {
+            const room = roomsMap.get(currentRoom);
+            if (!room.stickyNotes) room.stickyNotes = [];
+            const idx = room.stickyNotes.findIndex(n => n.id === data.noteId);
+            if (idx !== -1) {
+              room.stickyNotes[idx] = { ...room.stickyNotes[idx], ...data.updates };
+            }
+            broadcast(currentRoom, { ...data, senderId: clientId }, ws);
+          }
+          break;
+
+        case 'sticky_delete':
+          if (currentRoom && roomsMap.has(currentRoom)) {
+            const room = roomsMap.get(currentRoom);
+            if (!room.stickyNotes) room.stickyNotes = [];
+            room.stickyNotes = room.stickyNotes.filter(n => n.id !== data.noteId);
+            broadcast(currentRoom, { ...data, senderId: clientId }, ws);
           }
           break;
       }

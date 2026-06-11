@@ -20,7 +20,8 @@
   .login-hero-side {
     display: flex;
     flex-direction: column;
-    justify-content: flex-end;
+    justify-content: center;
+    align-items: center;
   }
 }
 
@@ -52,6 +53,28 @@
   z-index: 2;
   padding: 4rem;
   max-width: 600px;
+  margin: 0 auto;
+}
+
+.hero-logo-wrap {
+  background: #ffffff; /* pure white contrast badge */
+  padding: 1.5rem 3.5rem;
+  border-radius: 28px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 2.5rem;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hero-logo-wrap:hover {
+  transform: scale(1.02);
+}
+
+.hero-logo-wrap img {
+  height: 190px;
+  object-fit: contain;
 }
 
 .hero-headline {
@@ -117,6 +140,7 @@
 
 .form-titles {
   margin-bottom: 2rem;
+  text-align: center;
 }
 
 .form-titles h2 {
@@ -214,11 +238,15 @@
 
 .join-room-card {
   padding: 1.5rem;
-  background: var(--bg-color);
+  background: rgba(99, 102, 241, 0.02);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  text-align: center;
 }
 
 .join-form {
   display: flex;
+  gap: 0px;
 }
 
 .join-form .join-btn {

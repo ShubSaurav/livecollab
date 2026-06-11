@@ -142,9 +142,9 @@ const Login = () => {
           <polygon points="600,100 620,140 580,140" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
         </svg>
         
-        <div className="hero-content" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', width: '100%', padding: '0 2rem' }}>
-          <div className="hero-logo-wrap" style={{ marginBottom: '2rem' }}>
-            <img src="/logo.png" alt="LiveCollab" style={{ height: '160px', objectFit: 'contain' }} />
+        <div className="hero-content" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', width: '100%', padding: '0 2.5rem' }}>
+          <div className="hero-logo-wrap">
+            <img src="/logo.png" alt="LiveCollab" />
           </div>
           <h1 className="hero-headline">Create, build, and innovate <br/><span className="text-gradient">in real-time.</span></h1>
           <p className="hero-subtitle" style={{ margin: '0 auto 2rem' }}>The AI-powered workspace combining video, robust whiteboard tools, and real-time multiplayer cursors seamlessly.</p>
@@ -160,7 +160,7 @@ const Login = () => {
       <div className="login-form-side">
         <div className="login-form-wrapper">
           <div className="login-header-mobile">
-            <img src="/logo.png" alt="LiveCollab AI" style={{ height: '40px', objectFit: 'contain' }} />
+            <img src="/logo.png" alt="LiveCollab AI" style={{ height: '70px', objectFit: 'contain' }} />
           </div>
           
           <div className="form-titles">
