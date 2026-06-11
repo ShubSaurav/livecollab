@@ -954,7 +954,7 @@ const Room = () => {
           <div className="whiteboard-wrapper" ref={boardRef}>
             <canvas 
               ref={canvasRef}
-              className="whiteboard-canvas"
+              className={`whiteboard-canvas ${activeTool}-active`}
               onMouseDown={handleMouseDownCanvas}
               onMouseMove={handleMouseMoveCanvas}
               onMouseUp={handleMouseUpCanvas}

@@ -331,6 +331,7 @@
 .static-board-content {
   position: absolute;
   inset: 0;
+  pointer-events: none;
 }
 
 .mock-sticky {
@@ -533,8 +534,23 @@
   display: block;
   position: absolute;
   inset: 0;
-  cursor: crosshair;
   z-index: 1;
+}
+
+.whiteboard-canvas.cursor-active {
+  cursor: default;
+}
+
+.whiteboard-canvas.pen-active {
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23818cf8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'></path><path d='m15 5 4 4'></path></svg>") 0 22, crosshair;
+}
+
+.whiteboard-canvas.eraser-active {
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23f43f5e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21Z'></path><path d='M22 21H7'></path><path d='m5 11 9 9'></path></svg>") 0 22, crosshair;
+}
+
+.whiteboard-canvas.shape-active {
+  cursor: crosshair;
 }
 
 /* Brush controls panel */
@@ -641,6 +657,7 @@
   user-select: none;
   z-index: 10;
   touch-action: none; /* Prevents default touch panning when dragging sticky note */
+  pointer-events: auto; /* Re-enable pointer events for sticky notes */
   transition: box-shadow 0.15s ease;
 }
 
