@@ -20,6 +20,7 @@ const Room = () => {
   const [activeTool, setActiveTool] = useState('pen'); // default to pen drawing
   const [showBrushPanel, setShowBrushPanel] = useState(true);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(true);
+  const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
   
   const [ws, setWs] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -255,7 +256,7 @@ const Room = () => {
       window.removeEventListener('resize', handleResize);
       clearTimeout(t);
     };
-  }, []);
+  }, [isLeftSidebarOpen, isAiPanelOpen]);
 
   // Cleanup WebRTC camera/mic and screen sharing streams on unmount to prevent leaks
   useEffect(() => {
@@ -858,7 +859,20 @@ const Room = () => {
     <div className="room-layout">
       {/* Top Bar */}
       <header className="glass room-top-bar">
-        <div className="room-info">
+        <div className="room-info" style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
+          <img 
+            src="/logo.png" 
+            alt="LiveCollab" 
+            style={{ 
+              height: '32px', 
+              width: 'auto', 
+              backgroundColor: '#ffffff', 
+              padding: '4px', 
+              borderRadius: '8px', 
+              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
+              objectFit: 'contain'
+            }} 
+          />
           <div className="room-title">
             <h2 className="text-gradient">Board: {roomId}</h2>
             <span className="live-badge">LIVE</span>
@@ -888,7 +902,8 @@ const Room = () => {
       <div className="room-body">
         
         {/* Left Sidebar */}
-        <aside className="glass-panel left-sidebar">
+        {isLeftSidebarOpen && (
+          <aside className="glass-panel left-sidebar">
           <div className="sidebar-tabs">
             <button title="Group Chat" className={`tab-btn ${activeLeftTab === 'chat' ? 'active' : ''}`} onClick={() => setActiveLeftTab('chat')}>
               <MessageSquare size={20} />
@@ -962,6 +977,7 @@ const Room = () => {
             )}
           </div>
         </aside>
+        )}
 
         {/* Center Canvas */}
         <main className={`canvas-area ${gridType}-grid`}>
@@ -1072,7 +1088,10 @@ const Room = () => {
                           key={c}
                           style={{ backgroundColor: c }}
                           className={`color-dot ${brushColor === c ? 'selected' : ''}`}
-                          onClick={() => setBrushColor(c)}
+                          onClick={() => {
+                            setBrushColor(c);
+                            setShowBrushPanel(false);
+                          }}
                         />
                       ))}
                     </div>
@@ -1086,6 +1105,8 @@ const Room = () => {
                     max="32" 
                     value={brushSize} 
                     onChange={e => setBrushSize(parseInt(e.target.value))}
+                    onMouseUp={() => setShowBrushPanel(false)}
+                    onTouchEnd={() => setShowBrushPanel(false)}
                     className="size-slider"
                   />
                 </div>
@@ -1241,7 +1262,15 @@ const Room = () => {
 
       {/* Bottom Control Bar */}
       <footer className="glass control-bar">
-        <div className="control-group"></div>
+        <div className="control-group">
+          <button 
+            title={isLeftSidebarOpen ? "Hide Chat Sidebar" : "Show Chat Sidebar"} 
+            className={`control-btn text-btn bounce-hover ${isLeftSidebarOpen ? 'active-toggle' : ''}`} 
+            onClick={() => setIsLeftSidebarOpen(!isLeftSidebarOpen)}
+          >
+            <MessageSquare size={18} style={{marginRight:'0.4rem'}}/> Chat
+          </button>
+        </div>
         
         <div className="control-group center-controls">
           <button title="Toggle Microphone" className={`control-btn bounce-hover ${!mediaState.mic ? 'muted' : ''}`} onClick={() => toggleMedia('mic')}>

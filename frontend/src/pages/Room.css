@@ -312,7 +312,6 @@
 .tool-btn:hover {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text-primary);
-  transform: translateY(-1px) scale(1.05);
 }
 
 .tool-btn.active {
@@ -489,7 +488,6 @@
 
 .control-btn:hover {
   background: var(--bg-color);
-  transform: translateY(-2px);
   box-shadow: var(--shadow-md);
 }
 
@@ -605,7 +603,6 @@
 }
 
 .color-dot:hover {
-  transform: scale(1.2) translateY(-1px);
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
 }
 
@@ -804,7 +801,6 @@
 .sticky-creators .tool-btn.text-green { background-color: #86efac !important; color: #86efac; }
 
 .sticky-creators .tool-btn:hover {
-  transform: scale(1.25) translateY(-1px) rotate(-3deg);
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
 }
 
