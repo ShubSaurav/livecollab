@@ -44,5 +44,6 @@ Vercel will host the React/Vite web application.
    - `VITE_API_BASE_URL` = `https://livecollab-backend.onrender.com` *(Paste your Render backend URL)*
    - `VITE_WS_BASE_URL` = `wss://livecollab-backend.onrender.com` *(WebSocket URL, make sure it starts with `wss://` instead of `https://`)*
    - `VITE_GOOGLE_CLIENT_ID` = `1088125896398-e392imodjudp2raq76jbjkh5f83s7hb0.apps.googleusercontent.com`
+   - `VITE_GEMINI_API_KEY` = `<your_gemini_api_key_here>` *(Your Gemini API key for workspace chatbot functionality)*
 6. Click **Deploy**.
 7. Copy your Vercel URL, go back to your Render dashboard, and update the `CORS_ORIGIN` environment variable so your backend accepts requests from your frontend.
