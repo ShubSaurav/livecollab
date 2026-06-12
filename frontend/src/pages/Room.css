@@ -222,6 +222,29 @@
   display: flex;
   gap: 1rem;
   z-index: 10;
+  touch-action: none;
+}
+
+.video-strip-drag-handle {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.video-strip-drag-handle:hover {
+  opacity: 1 !important;
+  background: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: var(--shadow-md);
+}
+
+.video-strip-drag-handle:active {
+  cursor: grabbing !important;
+}
+
+.hide-feeds-btn {
+  transition: all 0.2s ease;
+}
+
+.hide-feeds-btn:hover {
+  transform: scale(1.1);
 }
 
 .video-tile {

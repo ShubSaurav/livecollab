@@ -6,7 +6,7 @@ import {
   Sparkles, ListTodo, FileText, CheckSquare, MessageCircle,
   Mic, MicOff, Video, VideoOff, MonitorUp, PhoneOff, Hand, Settings,
   Link, UserPlus, MoreHorizontal, Maximize2, Trash2, Send, Download, Grid,
-  Zap, GripHorizontal, Sun, Moon
+  Zap, GripHorizontal, Sun, Moon, X
 } from 'lucide-react';
 import { wsBaseUrl } from '../config';
 import { ThemeContext } from '../App';
@@ -25,6 +25,9 @@ const Room = () => {
   const [isToolbarOpen, setIsToolbarOpen] = useState(true);
   const [toolbarPosition, setToolbarPosition] = useState(null); // start centered
   const [isDraggingToolbar, setIsDraggingToolbar] = useState(false);
+  const [videoStripPosition, setVideoStripPosition] = useState(null); // start centered
+  const [isDraggingVideoStrip, setIsDraggingVideoStrip] = useState(false);
+  const [isVideoStripVisible, setIsVideoStripVisible] = useState(true);
   const [laserPaths, setLaserPaths] = useState([]);
   
   const [ws, setWs] = useState(null);
@@ -140,6 +143,12 @@ const Room = () => {
     const toolbarEl = e.currentTarget.closest('.whiteboard-toolbar');
     if (!toolbarEl) return;
     const rect = toolbarEl.getBoundingClientRect();
+    const parentRect = boardRef.current.getBoundingClientRect();
+    
+    // Convert to absolute coordinates immediately to avoid layout shift conflicts
+    const initialX = rect.left - parentRect.left;
+    const initialY = rect.top - parentRect.top;
+    setToolbarPosition({ x: initialX, y: initialY });
     
     toolbarDragStart.current = {
       x: e.clientX - rect.left,
@@ -173,6 +182,66 @@ const Room = () => {
     }
   };
 
+  const getVideoStripStyle = () => {
+    if (!videoStripPosition) {
+      return {
+        top: '1rem',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        position: 'absolute'
+      };
+    }
+    return {
+      top: `${videoStripPosition.y}px`,
+      left: `${videoStripPosition.x}px`,
+      position: 'absolute'
+    };
+  };
+
+  const handleVideoDragStart = (e) => {
+    e.preventDefault();
+    const videoStripEl = e.currentTarget.closest('.video-strip');
+    if (!videoStripEl) return;
+    const rect = videoStripEl.getBoundingClientRect();
+    const parentRect = boardRef.current.getBoundingClientRect();
+    
+    // Convert to absolute coordinates immediately to avoid layout shift conflicts
+    const initialX = rect.left - parentRect.left;
+    const initialY = rect.top - parentRect.top;
+    setVideoStripPosition({ x: initialX, y: initialY });
+    
+    videoStripDragStart.current = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    };
+    setIsDraggingVideoStrip(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleVideoDragMove = (e) => {
+    if (!isDraggingVideoStrip || !boardRef.current) return;
+    const parentRect = boardRef.current.getBoundingClientRect();
+    const videoStripEl = e.currentTarget.closest('.video-strip');
+    if (!videoStripEl) return;
+    const rect = videoStripEl.getBoundingClientRect();
+    
+    let newX = e.clientX - parentRect.left - videoStripDragStart.current.x;
+    let newY = e.clientY - parentRect.top - videoStripDragStart.current.y;
+    
+    // Keep within bounds
+    newX = Math.max(10, Math.min(newX, parentRect.width - rect.width - 10));
+    newY = Math.max(10, Math.min(newY, parentRect.height - rect.height - 10));
+    
+    setVideoStripPosition({ x: newX, y: newY });
+  };
+
+  const handleVideoDragEnd = (e) => {
+    if (isDraggingVideoStrip) {
+      setIsDraggingVideoStrip(false);
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
   // Sticky Notes States
   const [stickyNotes, setStickyNotes] = useState([]);
   const [draggingNoteId, setDraggingNoteId] = useState(null);
@@ -192,6 +261,9 @@ const Room = () => {
   const currentPathRef = useRef([]);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const drawActionsRef = useRef([]);
+  
+  const toolbarDragStart = useRef({ x: 0, y: 0 });
+  const videoStripDragStart = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
     drawActionsRef.current = drawActions;
@@ -1155,37 +1227,91 @@ const Room = () => {
         {/* Center Canvas */}
         <main className={`canvas-area ${gridType}-grid`}>
           {/* Top Floating Video Strip */}
-          <div className="video-strip">
-            {/* Local Video Tile */}
-            <div className={`video-tile bounce-hover ${mediaState.camera ? 'active' : ''} ${handRaised ? 'raised-hand-glow' : ''}`}>
-              {mediaState.camera && hasCameraPermission ? (
-                <video 
-                  ref={localVideoRefCallback} 
-                  autoPlay 
-                  playsInline 
-                  muted 
-                  className="video-feed" 
-                />
-              ) : (
-                <div className="video-placeholder me-cam">ME</div>
-              )}
-              <div className="tile-name">
-                You {!mediaState.mic && <MicOff size={11} style={{marginLeft:'4px'}} color="#ef4444"/>}
-                {handRaised && <span className="hand-badge" style={{marginLeft: '6px'}}>✋</span>}
+          {isVideoStripVisible && (
+            <div className="video-strip" style={{ ...getVideoStripStyle(), display: 'flex', alignItems: 'center', gap: '1rem', zIndex: 10 }}>
+              {/* Drag Handle */}
+              <div 
+                className="video-strip-drag-handle"
+                onPointerDown={handleVideoDragStart}
+                onPointerMove={handleVideoDragMove}
+                onPointerUp={handleVideoDragEnd}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'grab',
+                  color: 'var(--text-secondary)',
+                  opacity: 0.6,
+                  background: 'var(--glass-bg)',
+                  border: '1px solid var(--glass-border)',
+                  borderRadius: '12px',
+                  padding: '4px',
+                  height: '90px',
+                  width: '26px',
+                  boxShadow: 'var(--shadow-sm)',
+                  touchAction: 'none'
+                }}
+                onMouseEnter={e => e.currentTarget.style.color = 'var(--accent-primary)'}
+                onMouseLeave={e => e.currentTarget.style.color = 'var(--text-secondary)'}
+              >
+                <GripHorizontal size={16} style={{ transform: 'rotate(90deg)' }} />
+                <button 
+                  title="Hide Video Feeds"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsVideoStripVisible(false);
+                  }}
+                  className="hide-feeds-btn"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--text-secondary)',
+                    cursor: 'pointer',
+                    padding: '2px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginTop: '10px'
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.color = '#ef4444'}
+                  onMouseLeave={e => e.currentTarget.style.color = 'var(--text-secondary)'}
+                >
+                  <X size={14} />
+                </button>
               </div>
-            </div>
 
-            {/* Remote Video Tile */}
-            {roomUsers > 1 && (
-              <div className={`video-tile bounce-hover ${Object.keys(raisedHands).some(id => raisedHands[id]) ? 'raised-hand-glow' : ''}`}>
-                <div className="video-placeholder other-cam">U1</div>
+              {/* Local Video Tile */}
+              <div className={`video-tile bounce-hover ${mediaState.camera ? 'active' : ''} ${handRaised ? 'raised-hand-glow' : ''}`}>
+                {mediaState.camera && hasCameraPermission ? (
+                  <video 
+                    ref={localVideoRefCallback} 
+                    autoPlay 
+                    playsInline 
+                    muted 
+                    className="video-feed" 
+                  />
+                ) : (
+                  <div className="video-placeholder me-cam">ME</div>
+                )}
                 <div className="tile-name">
-                  Remote <MicOff size={11} className="text-secondary" style={{marginLeft: '4px'}}/>
-                  {Object.keys(raisedHands).some(id => raisedHands[id]) && <span className="hand-badge" style={{marginLeft: '6px'}}>✋</span>}
+                  You {!mediaState.mic && <MicOff size={11} style={{marginLeft:'4px'}} color="#ef4444"/>}
+                  {handRaised && <span className="hand-badge" style={{marginLeft: '6px'}}>✋</span>}
                 </div>
               </div>
-            )}
-          </div>
+
+              {/* Remote Video Tile */}
+              {roomUsers > 1 && (
+                <div className={`video-tile bounce-hover ${Object.keys(raisedHands).some(id => raisedHands[id]) ? 'raised-hand-glow' : ''}`}>
+                  <div className="video-placeholder other-cam">U1</div>
+                  <div className="tile-name">
+                    Remote <MicOff size={11} className="text-secondary" style={{marginLeft: '4px'}}/>
+                    {Object.keys(raisedHands).some(id => raisedHands[id]) && <span className="hand-badge" style={{marginLeft: '6px'}}>✋</span>}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Interactive HTML5 drawing board & sticky notes overlay */}
           <div className="whiteboard-wrapper" ref={boardRef}>
@@ -1481,6 +1607,13 @@ const Room = () => {
             onClick={() => setIsToolbarOpen(!isToolbarOpen)}
           >
             <Pen size={18} style={{marginRight:'0.4rem'}}/> Tools
+          </button>
+          <button 
+            title={isVideoStripVisible ? "Hide Video Feeds" : "Show Video Feeds"} 
+            className={`control-btn text-btn bounce-hover ${isVideoStripVisible ? 'active-toggle' : ''}`} 
+            onClick={() => setIsVideoStripVisible(!isVideoStripVisible)}
+          >
+            <Video size={18} style={{marginRight:'0.4rem'}}/> Feeds
           </button>
         </div>
         
