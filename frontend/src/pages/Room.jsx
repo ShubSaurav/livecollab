@@ -5,7 +5,8 @@ import {
   Pen, Type, StickyNote, Image as ImageIcon, Square, Circle, Eraser, Undo, Redo, MousePointer2,
   Sparkles, ListTodo, FileText, CheckSquare, MessageCircle,
   Mic, MicOff, Video, VideoOff, MonitorUp, PhoneOff, Hand, Settings,
-  Link, UserPlus, MoreHorizontal, Maximize2, Trash2, Send, Download, Grid
+  Link, UserPlus, MoreHorizontal, Maximize2, Trash2, Send, Download, Grid,
+  Zap, GripHorizontal, Sun, Moon
 } from 'lucide-react';
 import { wsBaseUrl } from '../config';
 import { ThemeContext } from '../App';
@@ -14,13 +15,17 @@ import './Room.css';
 const Room = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
-  const { theme } = useContext(ThemeContext);
+  const { theme, toggleTheme } = useContext(ThemeContext);
   
   const [activeLeftTab, setActiveLeftTab] = useState('chat');
   const [activeTool, setActiveTool] = useState('pen'); // default to pen drawing
   const [showBrushPanel, setShowBrushPanel] = useState(true);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(true);
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
+  const [isToolbarOpen, setIsToolbarOpen] = useState(true);
+  const [toolbarPosition, setToolbarPosition] = useState(null); // start centered
+  const [isDraggingToolbar, setIsDraggingToolbar] = useState(false);
+  const [laserPaths, setLaserPaths] = useState([]);
   
   const [ws, setWs] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -80,7 +85,7 @@ const Room = () => {
   const [isDrawing, setIsDrawing] = useState(false);
 
   const selectTool = (tool, shape = null) => {
-    if (tool === 'pen' || tool === 'eraser' || tool === 'shape') {
+    if (tool === 'pen' || tool === 'eraser' || tool === 'shape' || tool === 'text') {
       if (activeTool === tool && (tool !== 'shape' || shapeType === shape)) {
         // Toggle panel open/close if clicking the same active tool & shape configuration
         setShowBrushPanel(prev => !prev);
@@ -95,6 +100,76 @@ const Room = () => {
     } else {
       setActiveTool(tool);
       setShowBrushPanel(false);
+    }
+  };
+
+  const getToolbarStyle = () => {
+    if (!toolbarPosition) {
+      return {
+        top: '20px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        position: 'absolute'
+      };
+    }
+    return {
+      top: `${toolbarPosition.y}px`,
+      left: `${toolbarPosition.x}px`,
+      position: 'absolute'
+    };
+  };
+
+  const getBrushPanelStyle = () => {
+    if (!toolbarPosition) {
+      return {
+        top: '75px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        position: 'absolute'
+      };
+    }
+    return {
+      top: `${toolbarPosition.y + 55}px`,
+      left: `${toolbarPosition.x}px`,
+      position: 'absolute'
+    };
+  };
+
+  const handleToolbarDragStart = (e) => {
+    e.preventDefault();
+    const toolbarEl = e.currentTarget.closest('.whiteboard-toolbar');
+    if (!toolbarEl) return;
+    const rect = toolbarEl.getBoundingClientRect();
+    
+    toolbarDragStart.current = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    };
+    setIsDraggingToolbar(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleToolbarDragMove = (e) => {
+    if (!isDraggingToolbar || !boardRef.current) return;
+    const parentRect = boardRef.current.getBoundingClientRect();
+    const toolbarEl = e.currentTarget.closest('.whiteboard-toolbar');
+    if (!toolbarEl) return;
+    const rect = toolbarEl.getBoundingClientRect();
+    
+    let newX = e.clientX - parentRect.left - toolbarDragStart.current.x;
+    let newY = e.clientY - parentRect.top - toolbarDragStart.current.y;
+    
+    // Keep within bounds
+    newX = Math.max(10, Math.min(newX, parentRect.width - rect.width - 10));
+    newY = Math.max(10, Math.min(newY, parentRect.height - rect.height - 10));
+    
+    setToolbarPosition({ x: newX, y: newY });
+  };
+
+  const handleToolbarDragEnd = (e) => {
+    if (isDraggingToolbar) {
+      setIsDraggingToolbar(false);
+      e.currentTarget.releasePointerCapture(e.pointerId);
     }
   };
 
@@ -176,6 +251,11 @@ const Room = () => {
           delete next[data.clientId];
           return next;
         });
+      } else if (data.type === 'laser') {
+        setLaserPaths(prev => [
+          ...prev.filter(trail => trail.id !== data.senderId),
+          { id: data.senderId, points: data.points, timestamp: Date.now() }
+        ]);
       } else if (data.type === 'draw') {
         if (data.action) {
           if (data.isPreview) {
@@ -270,6 +350,22 @@ const Room = () => {
     };
   }, []);
 
+  // Handle laser trails fading out
+  useEffect(() => {
+    if (laserPaths.length === 0) return;
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const activeTrails = laserPaths.filter(trail => now - trail.timestamp < 1500);
+      if (activeTrails.length !== laserPaths.length) {
+        setLaserPaths(activeTrails);
+        redrawCanvas(drawActionsRef.current);
+      } else if (activeTrails.length > 0) {
+        redrawCanvas(drawActionsRef.current);
+      }
+    }, 50);
+    return () => clearInterval(interval);
+  }, [laserPaths]);
+
   // Auto-scroll chats
   useEffect(() => {
     if (chatBottomRef.current) {
@@ -292,7 +388,12 @@ const Room = () => {
     ctx.strokeStyle = action.color;
     ctx.lineWidth = action.size;
 
-    if (action.tool === 'pen' || action.tool === 'eraser') {
+    if (action.tool === 'text') {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.font = `bold ${action.size * 3 + 12}px Inter, sans-serif`;
+      ctx.fillStyle = action.color;
+      ctx.fillText(action.text, action.x, action.y);
+    } else if (action.tool === 'pen' || action.tool === 'eraser') {
       if (action.tool === 'eraser') {
         // Destination-out clears canvas pixels
         ctx.globalCompositeOperation = 'destination-out';
@@ -342,6 +443,26 @@ const Room = () => {
     if (currentDrawingAction) {
       drawActionOnCtx(ctx, currentDrawingAction);
     }
+
+    // Draw active laser pointer trails
+    laserPaths.forEach(trail => {
+      const age = Date.now() - trail.timestamp;
+      if (age > 1500) return;
+      const alpha = 1 - age / 1500;
+      ctx.strokeStyle = `rgba(239, 68, 68, ${alpha})`;
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      const points = trail.points || [];
+      if (points.length > 0) {
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) {
+          ctx.lineTo(points[i].x, points[i].y);
+        }
+        ctx.stroke();
+      }
+    });
   };
 
   // Canvas Handlers
@@ -358,6 +479,32 @@ const Room = () => {
 
     if (activeTool === 'pen' || activeTool === 'eraser') {
       currentPathRef.current = [{ x, y }];
+    } else if (activeTool === 'text') {
+      const val = prompt("Enter text to place on whiteboard:");
+      if (val && val.trim()) {
+        const finalAction = {
+          tool: 'text',
+          x,
+          y,
+          text: val.trim(),
+          color: brushColor,
+          size: brushSize
+        };
+        setDrawActions(prev => {
+          const next = [...prev, finalAction];
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'draw', action: finalAction, roomId }));
+          }
+          return next;
+        });
+      }
+      setIsDrawing(false);
+    } else if (activeTool === 'laser') {
+      currentPathRef.current = [{ x, y }];
+      setLaserPaths(prev => [
+        ...prev.filter(trail => trail.id !== 'local'),
+        { id: 'local', points: [{ x, y }], timestamp: Date.now() }
+      ]);
     }
   };
 
@@ -379,7 +526,21 @@ const Room = () => {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    if (activeTool === 'pen' || activeTool === 'eraser') {
+    if (activeTool === 'laser') {
+      const newPoint = { x, y };
+      currentPathRef.current.push(newPoint);
+      setLaserPaths(prev => [
+        ...prev.filter(trail => trail.id !== 'local'),
+        { id: 'local', points: [...currentPathRef.current], timestamp: Date.now() }
+      ]);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'laser',
+          points: currentPathRef.current,
+          roomId
+        }));
+      }
+    } else if (activeTool === 'pen' || activeTool === 'eraser') {
       const prevPoint = currentPathRef.current[currentPathRef.current.length - 1];
       const newPoint = { x, y };
       currentPathRef.current.push(newPoint);
@@ -422,6 +583,10 @@ const Room = () => {
   const handleMouseUpCanvas = (e) => {
     if (!isDrawing || activeTool === 'cursor') return;
     setIsDrawing(false);
+
+    if (activeTool === 'laser') {
+      return;
+    }
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -575,7 +740,7 @@ const Room = () => {
     }
   };
 
-  // AI assistant handlers
+  // AI assistant handlers (Enhanced with dynamic board awareness and conversational triggers)
   const simulateAiResponse = (promptType) => {
     setIsAiLoading(true);
     let fullText = '';
@@ -583,19 +748,27 @@ const Room = () => {
     const notesCount = stickyNotes.length;
     const drawingsCount = drawActions.length;
     const chatMsgCount = messages.filter(m => m.type === 'chat').length;
+    const stickyTexts = stickyNotes.map(n => n.text).filter(t => t.trim().length > 0);
     
-    if (promptType === 'summary') {
-      fullText = `### LiveCollab Workspace Summary 📊\n\nI have scanned the active canvas, sticky elements, and team chat:\n* **Whiteboard Details**: Detected **${drawingsCount} sketches/shapes** drawn on the board.\n* **Sticky Workspace**: Identified **${notesCount} active sticky notes**.\n* **Collaboration Hub**: Exchanged **${chatMsgCount} team chat logs** in this room.\n\n#### Key Focus Areas:\n1. **Dynamic Whiteboarding**: High concentration of visual shapes/wireframes suggests layout architecture brainstorms.\n2. **Draggable Tasks**: Floating notes map structural dependencies. Tasks focus on setup requirements and testing coordinates.\n\n*What else can I help you extract or organize?*`;
-    } else if (promptType === 'tasks') {
+    const lowerPrompt = promptType.toLowerCase();
+    
+    if (promptType === 'summary' || lowerPrompt.includes('summary') || lowerPrompt.includes('summarize') || lowerPrompt.includes('board')) {
+      fullText = `### LiveCollab Workspace Summary 📊\n\nI have scanned the active canvas, sticky elements, and team chat:\n* **Whiteboard Details**: Detected **${drawingsCount} sketches/shapes** drawn on the board.\n* **Sticky Workspace**: Identified **${notesCount} active sticky notes**.\n* **Collaboration Hub**: Exchanged **${chatMsgCount} team chat logs** in this room.\n\n#### Key Focus Areas:\n1. **Dynamic Whiteboarding**: Concentration of visual sketches suggests active mockup layout iteration.\n2. **Draggable Tasks**: Sticky elements map structural dependencies. ${stickyTexts.length > 0 ? `The team is discussing: ${stickyTexts.map(t => `"${t}"`).join(', ')}.` : 'No custom tasks written on stickies yet.'}`;
+    } else if (promptType === 'tasks' || lowerPrompt.includes('task') || lowerPrompt.includes('todo') || lowerPrompt.includes('checklist')) {
       const extracted = stickyNotes
         .map((n, i) => `  ${i + 1}. **Sticky Task [${n.colorName.toUpperCase()}]**: "${n.text.substring(0, 50)}${n.text.length > 50 ? '...' : ''}"`)
         .join('\n');
       
-      fullText = `### Automated Task Extraction 📋\n\nHere is your team's checklist built directly from sticky notes:\n\n${extracted || '  1. **Default Action**: Initialize whiteboard designs.\n  2. **WS Test**: Open multi-window sync validation.\n  3. **Interface check**: Verify light/dark style parameters.'}\n\n*You can copy this list directly into your planning issues.*`;
-    } else if (promptType === 'notes') {
-      fullText = `### Automated Meeting Notes 📝\n* **Workspace ID**: Room \`${roomId}\`\n* **Active Collab Users**: ${roomUsers} member(s)\n* **Technical Decisions**: Database fallback handles ENOTFOUND/timeout DNS conditions with in-memory fallback buffers.\n\n**Next Action Items**:\n- Standardize responsive styling variables.\n- Polish Outfit theme selectors.`;
+      fullText = `### Automated Task Extraction 📋\n\nHere is your team's checklist built directly from active sticky notes:\n\n${extracted || '  1. **Default Action**: Initialize whiteboard designs.\n  2. **WS Test**: Open multi-window sync validation.\n  3. **Interface check**: Verify light/dark style parameters.'}\n\n*You can copy this list directly into your planning issues.*`;
+    } else if (promptType === 'notes' || lowerPrompt.includes('note') || lowerPrompt.includes('meeting')) {
+      fullText = `### Automated Meeting Notes 📝\n* **Workspace ID**: Room \`${roomId}\`\n* **Active Collab Users**: ${roomUsers} member(s)\n* **Technical Decisions**: Database fallback handles ENOTFOUND/timeout DNS conditions with in-memory fallback buffers.\n\n**Next Action Items**:\n${stickyTexts.length > 0 ? stickyTexts.map(t => `- Follow up on: "${t}"`).join('\n') : '- Standardize responsive styling variables.\n- Polish Outfit theme selectors.'}`;
     } else {
-      fullText = `I am analyzing the workspace regarding "${promptType}". On the board, there are ${notesCount} sticky notes and ${drawingsCount} drawing paths. Let me know if you would like me to draft notes, checklists, or summaries from them!`;
+      // Generate context-aware fallback response
+      if (stickyTexts.length > 0) {
+        fullText = `I have analyzed the active workspace regarding your query: "${promptType}". Based on the sticky notes (${stickyTexts.map(t => `"${t}"`).join(', ')}):\n\n* **Discussion Theme**: It looks like you are collaborating on these items.\n* **Drawing Stats**: There are also ${drawingsCount} drawing lines or shapes on the canvas.\n\nWould you like me to compile notes, checklists, or summaries from these elements?`;
+      } else {
+        fullText = `I scanned the board for "${promptType}" but it is currently empty. Please drop some sticky notes or draw on the whiteboard, then ask me to summarize, extract tasks, or draft meeting notes!`;
+      }
     }
 
     setAiMessages(prev => [...prev, { role: 'assistant', text: '' }]);
@@ -866,10 +1039,10 @@ const Room = () => {
             style={{ 
               height: '32px', 
               width: 'auto', 
-              backgroundColor: '#ffffff', 
+              backgroundColor: theme === 'dark' ? '#ffffff' : 'transparent', 
               padding: '4px', 
               borderRadius: '8px', 
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
+              boxShadow: theme === 'dark' ? '0 2px 8px rgba(0, 0, 0, 0.2)' : 'none',
               objectFit: 'contain'
             }} 
           />
@@ -1026,32 +1199,64 @@ const Room = () => {
             />
 
             {/* Whiteboard Toolbar */}
-            <div className="glass-card whiteboard-toolbar">
-              <button title="Select / Move Sticky Notes" onClick={()=>selectTool('cursor')} className={`tool-btn bounce-hover ${activeTool==='cursor'?'active':''}`}><MousePointer2 size={18} /></button>
-              <div className="tool-divider"></div>
-              
-              <button title="Pen Drawing" onClick={()=>selectTool('pen')} className={`tool-btn bounce-hover ${activeTool==='pen'?'active':''}`}><Pen size={18} /></button>
-              <button title="Eraser Brush" onClick={()=>selectTool('eraser')} className={`tool-btn bounce-hover ${activeTool==='eraser'?'active':''}`}><Eraser size={18} /></button>
-              <div className="tool-divider"></div>
-              
-              <button title="Rectangle Shape" onClick={()=>selectTool('shape', 'rect')} className={`tool-btn bounce-hover ${activeTool==='shape' && shapeType==='rect'?'active':''}`}><Square size={18} /></button>
-              <button title="Circle Shape" onClick={()=>selectTool('shape', 'circle')} className={`tool-btn bounce-hover ${activeTool==='shape' && shapeType==='circle'?'active':''}`}><Circle size={18} /></button>
-              <div className="tool-divider"></div>
-              
-              <div className="sticky-creators">
-                <button title="Yellow Sticky" onClick={() => createStickyNote('yellow')} className="tool-btn bounce-hover text-yellow"><StickyNote size={18} fill="#fef08a" /></button>
-                <button title="Pink Sticky" onClick={() => createStickyNote('pink')} className="tool-btn bounce-hover text-pink"><StickyNote size={18} fill="#fbcfe8" /></button>
-                <button title="Blue Sticky" onClick={() => createStickyNote('blue')} className="tool-btn bounce-hover text-blue"><StickyNote size={18} fill="#93c5fd" /></button>
-                <button title="Green Sticky" onClick={() => createStickyNote('green')} className="tool-btn bounce-hover text-green"><StickyNote size={18} fill="#86efac" /></button>
-              </div>
-              <div className="tool-divider"></div>
-              
-              <button title="Clear Whiteboard" onClick={clearWhiteboard} className="tool-btn bounce-hover text-danger"><Trash2 size={18} /></button>
-            </div>
+            {isToolbarOpen && (
+              <div 
+                className="glass-card whiteboard-toolbar"
+                style={getToolbarStyle()}
+              >
+                {/* Drag Handle */}
+                <div 
+                  className="toolbar-drag-handle"
+                  onPointerDown={handleToolbarDragStart}
+                  onPointerMove={handleToolbarDragMove}
+                  onPointerUp={handleToolbarDragEnd}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '0 4px',
+                    cursor: 'grab',
+                    color: 'var(--text-secondary)',
+                    opacity: 0.6
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.color = 'var(--accent-primary)'}
+                  onMouseLeave={e => e.currentTarget.style.color = 'var(--text-secondary)'}
+                >
+                  <GripHorizontal size={18} />
+                </div>
+                <div className="tool-divider"></div>
 
-            {/* Brush Controls Panel (Visible when Pen/Shape is active and showBrushPanel is true) */}
-            {showBrushPanel && (activeTool === 'pen' || activeTool === 'shape' || activeTool === 'eraser') && (
-              <div className="glass-card brush-controls-panel">
+                <button title="Select / Move Sticky Notes" onClick={()=>selectTool('cursor')} className={`tool-btn bounce-hover ${activeTool==='cursor'?'active':''}`}><MousePointer2 size={18} /></button>
+                <div className="tool-divider"></div>
+                
+                <button title="Pen Drawing" onClick={()=>selectTool('pen')} className={`tool-btn bounce-hover ${activeTool==='pen'?'active':''}`}><Pen size={18} /></button>
+                <button title="Eraser Brush" onClick={()=>selectTool('eraser')} className={`tool-btn bounce-hover ${activeTool==='eraser'?'active':''}`}><Eraser size={18} /></button>
+                <button title="Laser Pointer" onClick={()=>selectTool('laser')} className={`tool-btn bounce-hover ${activeTool==='laser'?'active':''}`}><Zap size={18} /></button>
+                <button title="Add Text" onClick={()=>selectTool('text')} className={`tool-btn bounce-hover ${activeTool==='text'?'active':''}`}><Type size={18} /></button>
+                <div className="tool-divider"></div>
+                
+                <button title="Rectangle Shape" onClick={()=>selectTool('shape', 'rect')} className={`tool-btn bounce-hover ${activeTool==='shape' && shapeType==='rect'?'active':''}`}><Square size={18} /></button>
+                <button title="Circle Shape" onClick={()=>selectTool('shape', 'circle')} className={`tool-btn bounce-hover ${activeTool==='shape' && shapeType==='circle'?'active':''}`}><Circle size={18} /></button>
+                <div className="tool-divider"></div>
+                
+                <div className="sticky-creators" style={{ display: 'flex', gap: '4px', padding: '2px' }}>
+                  <button title="Yellow Sticky" onClick={() => createStickyNote('yellow')} className="tool-btn bounce-hover text-yellow"><StickyNote size={18} fill="#fef08a" /></button>
+                  <button title="Pink Sticky" onClick={() => createStickyNote('pink')} className="tool-btn bounce-hover text-pink"><StickyNote size={18} fill="#fbcfe8" /></button>
+                  <button title="Blue Sticky" onClick={() => createStickyNote('blue')} className="tool-btn bounce-hover text-blue"><StickyNote size={18} fill="#93c5fd" /></button>
+                  <button title="Green Sticky" onClick={() => createStickyNote('green')} className="tool-btn bounce-hover text-green"><StickyNote size={18} fill="#86efac" /></button>
+                </div>
+                <div className="tool-divider"></div>
+                
+                <button title="Clear Whiteboard" onClick={clearWhiteboard} className="tool-btn bounce-hover text-danger"><Trash2 size={18} /></button>
+              </div>
+            )}
+
+            {/* Brush Controls Panel (Visible when Pen/Shape/Text is active and showBrushPanel is true) */}
+            {showBrushPanel && (activeTool === 'pen' || activeTool === 'shape' || activeTool === 'eraser' || activeTool === 'text') && (
+              <div 
+                className="glass-card brush-controls-panel"
+                style={getBrushPanelStyle()}
+              >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
                   <span className="section-label" style={{ margin: 0 }}>
                     {activeTool === 'pen' ? 'Pen Brush' : activeTool === 'eraser' ? 'Eraser' : `Shape (${shapeType})`}
@@ -1270,6 +1475,13 @@ const Room = () => {
           >
             <MessageSquare size={18} style={{marginRight:'0.4rem'}}/> Chat
           </button>
+          <button 
+            title={isToolbarOpen ? "Hide Whiteboard Tools" : "Show Whiteboard Tools"} 
+            className={`control-btn text-btn bounce-hover ${isToolbarOpen ? 'active-toggle' : ''}`} 
+            onClick={() => setIsToolbarOpen(!isToolbarOpen)}
+          >
+            <Pen size={18} style={{marginRight:'0.4rem'}}/> Tools
+          </button>
         </div>
         
         <div className="control-group center-controls">
@@ -1320,9 +1532,17 @@ const Room = () => {
           <button title="End Session" className="control-btn end-call bounce-hover" onClick={() => navigate('/dashboard')}><PhoneOff size={22} /></button>
         </div>
 
-        <div className="control-group right-controls">
+        <div className="control-group right-controls" style={{ gap: '0.5rem' }}>
           <button title="Toggle AI Panel" className={`control-btn text-btn bounce-hover ${isAiPanelOpen ? 'active-toggle' : ''}`} onClick={() => setIsAiPanelOpen(!isAiPanelOpen)}>
             <Sparkles size={18} style={{marginRight:'0.4rem'}}/> AI
+          </button>
+          <button 
+            title={theme === 'light' ? "Switch to Dark Mode" : "Switch to Light Mode"} 
+            className="control-btn bounce-hover"
+            onClick={toggleTheme}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
           </button>
           <button 
             title="Settings" 
