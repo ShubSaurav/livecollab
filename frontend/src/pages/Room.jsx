@@ -6,7 +6,7 @@ import {
   Sparkles, ListTodo, FileText, CheckSquare, MessageCircle,
   Mic, MicOff, Video, VideoOff, MonitorUp, PhoneOff, Hand, Settings,
   Link, UserPlus, MoreHorizontal, Maximize2, Trash2, Send, Download, Grid,
-  Zap, GripHorizontal, Sun, Moon, X
+  Zap, GripHorizontal, Sun, Moon, X, Key
 } from 'lucide-react';
 import { wsBaseUrl } from '../config';
 import { ThemeContext } from '../App';
@@ -264,6 +264,11 @@ const Room = () => {
   ]);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiInput, setAiInput] = useState('');
+  const [geminiApiKey, setGeminiApiKey] = useState(() => {
+    return localStorage.getItem('livecollab_gemini_key') || import.meta.env.VITE_GEMINI_API_KEY || '';
+  });
+  const [tempApiKey, setTempApiKey] = useState('');
+  const [showApiKeySetting, setShowApiKeySetting] = useState(false);
 
   const boardRef = useRef(null);
   const canvasRef = useRef(null);
@@ -864,8 +869,8 @@ const Room = () => {
     }
   };
 
-  // AI assistant handlers (Enhanced with dynamic board awareness and conversational triggers)
-  const simulateAiResponse = (promptType) => {
+  // AI assistant handlers (Enhanced with dynamic board awareness and Gemini API integration)
+  const simulateAiResponse = async (promptType) => {
     setIsAiLoading(true);
     let fullText = '';
     
@@ -875,38 +880,88 @@ const Room = () => {
     const stickyTexts = stickyNotes.map(n => n.text).filter(t => t.trim().length > 0);
     
     const lowerPrompt = promptType.toLowerCase();
-    
-    if (promptType === 'summary' || lowerPrompt.includes('summary') || lowerPrompt.includes('summarize') || lowerPrompt.includes('board')) {
-      fullText = `### LiveCollab Workspace Summary 📊\n\nI have scanned the active canvas, sticky elements, and team chat:\n* **Whiteboard Details**: Detected **${drawingsCount} sketches/shapes** drawn on the board.\n* **Sticky Workspace**: Identified **${notesCount} active sticky notes**.\n* **Collaboration Hub**: Exchanged **${chatMsgCount} team chat logs** in this room.\n\n#### Key Focus Areas:\n1. **Dynamic Whiteboarding**: Concentration of visual sketches suggests active mockup layout iteration.\n2. **Draggable Tasks**: Sticky elements map structural dependencies. ${stickyTexts.length > 0 ? `The team is discussing: ${stickyTexts.map(t => `"${t}"`).join(', ')}.` : 'No custom tasks written on stickies yet.'}`;
-    } else if (promptType === 'tasks' || lowerPrompt.includes('task') || lowerPrompt.includes('todo') || lowerPrompt.includes('checklist')) {
-      const extracted = stickyNotes
-        .map((n, i) => `  ${i + 1}. **Sticky Task [${n.colorName.toUpperCase()}]**: "${n.text.substring(0, 50)}${n.text.length > 50 ? '...' : ''}"`)
-        .join('\n');
-      
-      fullText = `### Automated Task Extraction 📋\n\nHere is your team's checklist built directly from active sticky notes:\n\n${extracted || '  1. **Default Action**: Initialize whiteboard designs.\n  2. **WS Test**: Open multi-window sync validation.\n  3. **Interface check**: Verify light/dark style parameters.'}\n\n*You can copy this list directly into your planning issues.*`;
-    } else if (promptType === 'notes' || lowerPrompt.includes('note') || lowerPrompt.includes('meeting')) {
-      fullText = `### Automated Meeting Notes 📝\n* **Workspace ID**: Room \`${roomId}\`\n* **Active Collab Users**: ${roomUsers} member(s)\n* **Technical Decisions**: Database fallback handles ENOTFOUND/timeout DNS conditions with in-memory fallback buffers.\n\n**Next Action Items**:\n${stickyTexts.length > 0 ? stickyTexts.map(t => `- Follow up on: "${t}"`).join('\n') : '- Standardize responsive styling variables.\n- Polish Outfit theme selectors.'}`;
+
+    if (geminiApiKey) {
+      try {
+        let systemContext = `You are the LiveCollab AI Assistant, a helpful workspace partner integrated into a collaborative whiteboard room (Room ID: "${roomId}").
+You have access to the current state of the board:
+- Drawings: ${drawingsCount} sketches/shapes drawn on the canvas.
+- Sticky Notes: ${notesCount} active stickies. Content of stickies: ${JSON.stringify(stickyTexts)}.
+- Recent chat logs: ${JSON.stringify(messages.filter(m => m.type === 'chat').slice(-10).map(m => m.text))}.
+
+The user may ask you to summarize the board, extract tasks/todos, create meeting notes, or ask any general question (just like general Gemini AI).
+Use clear, beautiful markdown formatting. Keep your tone professional, collaborative, and friendly.`;
+
+        let prompt = promptType;
+        if (promptType === 'summary') {
+          prompt = 'Please summarize the current state of our whiteboard room and active discussions.';
+        } else if (promptType === 'tasks') {
+          prompt = 'Please extract action items and checklist tasks from the sticky notes in this whiteboard room.';
+        } else if (promptType === 'notes') {
+          prompt = 'Please generate meeting minutes and notes from our whiteboard room, detailing discussions and next steps.';
+        }
+
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { text: `${systemContext}\n\nUser Question: ${prompt}` }
+                ]
+              }
+            ]
+          })
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData?.error?.message || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        fullText = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response text received from Gemini.';
+      } catch (err) {
+        console.error('Gemini API Error:', err);
+        fullText = `### Gemini API Error ⚠️\n\nFailed to get a response from Gemini AI. Please check your API key and network connection.\n\n**Details**: ${err.message}`;
+      }
     } else {
-      // Check for general knowledge questions
-      if (lowerPrompt.includes('photosynthesis') || lowerPrompt.includes('photo synthesis')) {
-        fullText = `### Photosynthesis 🌿\n\nPhotosynthesis is the chemical process by which green plants, algae, and some bacteria convert light energy (usually from the Sun) into chemical energy (glucose), using carbon dioxide and water.\n\n#### The Chemical Formula:\n\`\`\`\n6CO₂ (Carbon Dioxide) + 6H₂O (Water) + Light Energy ➔ C₆H₁₂O₆ (Glucose) + 6O₂ (Oxygen)\n\`\`\`\n\n#### Key Process Steps:\n1. **Light Absorption**: Chlorophyll inside plant chloroplasts captures solar energy.\n2. **Water Splitting**: Water molecules absorbed by roots are split into oxygen gas and hydrogen ions.\n3. **Carbon Fixation**: Carbon dioxide from the air is processed to form sugars (glucose).\n\nThis process is fundamental to life on Earth as it releases Oxygen (O₂) as a byproduct and serves as the primary energy source for nearly all food chains.`;
-      } else if (lowerPrompt.includes('gravity') || lowerPrompt.includes('gravitation')) {
-        fullText = `### Gravity 🌌\n\nGravity is a fundamental force of attraction that acts between all objects with mass. The more mass an object has, and the closer it is, the stronger its gravitational pull.\n\n#### Key Milestones:\n* **Sir Isaac Newton (1687)**: Formulated the Law of Universal Gravitation, stating that every mass exerts an attractive force on every other mass.\n* **Albert Einstein (1915)**: Described gravity not as a direct force, but as a curvature of spacetime caused by mass and energy (Theory of General Relativity).\n\nWithout gravity, planets could not orbit the sun, and the atmosphere, oceans, and life could not remain bound to Earth.`;
-      } else if (lowerPrompt.includes('javascript') || lowerPrompt.includes(' js')) {
-        fullText = `### JavaScript (JS) 💻\n\nJavaScript is a high-level, dynamic, single-threaded, and interpreted programming language that conforms to the ECMAScript specification.\n\n#### Core Concepts:\n* **Prototypes**: Objects inherit properties directly from other template objects.\n* **Asynchronous Event Loop**: Handles non-blocking execution using callbacks, promises, and async/await.\n* **First-Class Functions**: Functions can be passed as arguments, returned, and assigned to variables.`;
-      } else if (lowerPrompt.includes('react')) {
-        fullText = `### ReactJS ⚛️\n\nReact is a declarative, component-based JavaScript library for building interactive user interfaces, maintained by Meta and a large developer community.\n\n#### Key Features:\n1. **JSX**: A syntax extension that allows writing HTML elements inside JavaScript.\n2. **Virtual DOM**: React keeps a lightweight representation of the UI in memory, batch-updating only the modified elements to improve rendering speed.\n3. **Component Lifecycle & Hooks**: Hooks (like \`useState\`, \`useEffect\`) allow functional components to manage local state and side effects.`;
-      } else if (lowerPrompt.includes('who are you') || lowerPrompt.includes('what are you') || lowerPrompt.includes('your name')) {
-        fullText = `I am the **LiveCollab AI Assistant**, a smart workspace agent built to help teams brainstorm, write, design, and plan projects in real-time.\n\n#### What I Can Do:\n1. **Analyze Whiteboard**: Summarize drawing lines and shapes on the canvas.\n2. **Extract Tasks**: Scan your sticky notes and compile them into action checklists.\n3. **General Knowledge**: Answer general questions regarding science, math, history, coding, and design.\n4. **Meeting Minutes**: Generate notes and logs from the current session.`;
-      } else if (lowerPrompt.startsWith('what') || lowerPrompt.startsWith('how') || lowerPrompt.startsWith('why') || lowerPrompt.startsWith('explain') || lowerPrompt.startsWith('who') || lowerPrompt.includes('?') || lowerPrompt.length > 15) {
-        // General question fallback template
-        fullText = `### Workspace Brainstorming: ${promptType} 🧠\n\nHere is a conceptual analysis for your query: **"${promptType}"**.\n\n#### 1. Contextual Definition\nThe topic **"${promptType}"** refers to a core domain subject. In collaborative design, breaking this down into modular steps enables team members to build shared understanding.\n\n#### 2. Key Considerations\n* **Research**: Gather structural facts and references to validate assumptions.\n* **Design**: Draw block diagrams on this whiteboard to outline flows or architectures.\n* **Tasks**: Drop sticky notes to assign specific follow-up actions to collaborators.\n\nWould you like me to generate a checklist of tasks or compile whiteboard session notes related to this topic?`;
+      if (promptType === 'summary' || lowerPrompt.includes('summary') || lowerPrompt.includes('summarize') || lowerPrompt.includes('board')) {
+        fullText = `### LiveCollab Workspace Summary 📊\n\nI have scanned the active canvas, sticky elements, and team chat:\n* **Whiteboard Details**: Detected **${drawingsCount} sketches/shapes** drawn on the board.\n* **Sticky Workspace**: Identified **${notesCount} active sticky notes**.\n* **Collaboration Hub**: Exchanged **${chatMsgCount} team chat logs** in this room.\n\n#### Key Focus Areas:\n1. **Dynamic Whiteboarding**: Concentration of visual sketches suggests active mockup layout iteration.\n2. **Draggable Tasks**: Sticky elements map structural dependencies. ${stickyTexts.length > 0 ? `The team is discussing: ${stickyTexts.map(t => `"${t}"`).join(', ')}.` : 'No custom tasks written on stickies yet.'}`;
+      } else if (promptType === 'tasks' || lowerPrompt.includes('task') || lowerPrompt.includes('todo') || lowerPrompt.includes('checklist')) {
+        const extracted = stickyNotes
+          .map((n, i) => `  ${i + 1}. **Sticky Task [${n.colorName.toUpperCase()}]**: "${n.text.substring(0, 50)}${n.text.length > 50 ? '...' : ''}"`)
+          .join('\n');
+        
+        fullText = `### Automated Task Extraction 📋\n\nHere is your team's checklist built directly from active sticky notes:\n\n${extracted || '  1. **Default Action**: Initialize whiteboard designs.\n  2. **WS Test**: Open multi-window sync validation.\n  3. **Interface check**: Verify light/dark style parameters.'}\n\n*You can copy this list directly into your planning issues.*`;
+      } else if (promptType === 'notes' || lowerPrompt.includes('note') || lowerPrompt.includes('meeting')) {
+        fullText = `### Automated Meeting Notes 📝\n* **Workspace ID**: Room \`${roomId}\`\n* **Active Collab Users**: ${roomUsers} member(s)\n* **Technical Decisions**: Database fallback handles ENOTFOUND/timeout DNS conditions with in-memory fallback buffers.\n\n**Next Action Items**:\n${stickyTexts.length > 0 ? stickyTexts.map(t => `- Follow up on: "${t}"`).join('\n') : '- Standardize responsive styling variables.\n- Polish Outfit theme selectors.'}`;
       } else {
-        // Context-aware board response
-        if (stickyTexts.length > 0) {
-          fullText = `I have analyzed the active workspace regarding your query: "${promptType}". Based on the sticky notes (${stickyTexts.map(t => `"${t}"`).join(', ')}):\n\n* **Discussion Theme**: It looks like you are collaborating on these items.\n* **Drawing Stats**: There are also ${drawingsCount} drawing lines or shapes on the canvas.\n\nWould you like me to compile notes, checklists, or summaries from these elements?`;
+        // Check for general knowledge questions
+        if (lowerPrompt.includes('photosynthesis') || lowerPrompt.includes('photo synthesis')) {
+          fullText = `### Photosynthesis 🌿\n\nPhotosynthesis is the chemical process by which green plants, algae, and some bacteria convert light energy (usually from the Sun) into chemical energy (glucose), using carbon dioxide and water.\n\n#### The Chemical Formula:\n\`\`\`\n6CO₂ (Carbon Dioxide) + 6H₂O (Water) + Light Energy ➔ C₆H₁₂O₆ (Glucose) + 6O₂ (Oxygen)\n\`\`\`\n\n#### Key Process Steps:\n1. **Light Absorption**: Chlorophyll inside plant chloroplasts captures solar energy.\n2. **Water Splitting**: Water molecules absorbed by roots are split into oxygen gas and hydrogen ions.\n3. **Carbon Fixation**: Carbon dioxide from the air is processed to form sugars (glucose).\n\nThis process is fundamental to life on Earth as it releases Oxygen (O₂) as a byproduct and serves as the primary energy source for nearly all food chains.`;
+        } else if (lowerPrompt.includes('gravity') || lowerPrompt.includes('gravitation')) {
+          fullText = `### Gravity 🌌\n\nGravity is a fundamental force of attraction that acts between all objects with mass. The more mass an object has, and the closer it is, the stronger its gravitational pull.\n\n#### Key Milestones:\n* **Sir Isaac Newton (1687)**: Formulated the Law of Universal Gravitation, stating that every mass exerts an attractive force on every other mass.\n* **Albert Einstein (1915)**: Described gravity not as a direct force, but as a curvature of spacetime caused by mass and energy (Theory of General Relativity).\n\nWithout gravity, planets could not orbit the sun, and the atmosphere, oceans, and life could not remain bound to Earth.`;
+        } else if (lowerPrompt.includes('javascript') || lowerPrompt.includes(' js')) {
+          fullText = `### JavaScript (JS) 💻\n\nJavaScript is a high-level, dynamic, single-threaded, and interpreted programming language that conforms to the ECMAScript specification.\n\n#### Core Concepts:\n* **Prototypes**: Objects inherit properties directly from other template objects.\n* **Asynchronous Event Loop**: Handles non-blocking execution using callbacks, promises, and async/await.\n* **First-Class Functions**: Functions can be passed as arguments, returned, and assigned to variables.`;
+        } else if (lowerPrompt.includes('react')) {
+          fullText = `### ReactJS ⚛️\n\nReact is a declarative, component-based JavaScript library for building interactive user interfaces, maintained by Meta and a large developer community.\n\n#### Key Features:\n1. **JSX**: A syntax extension that allows writing HTML elements inside JavaScript.\n2. **Virtual DOM**: React keeps a lightweight representation of the UI in memory, batch-updating only the modified elements to improve rendering speed.\n3. **Component Lifecycle & Hooks**: Hooks (like \`useState\`, \`useEffect\`) allow functional components to manage local state and side effects.`;
+        } else if (lowerPrompt.includes('who are you') || lowerPrompt.includes('what are you') || lowerPrompt.includes('your name')) {
+          fullText = `I am the **LiveCollab AI Assistant**, a smart workspace agent built to help teams brainstorm, write, design, and plan projects in real-time.\n\n#### What I Can Do:\n1. **Analyze Whiteboard**: Summarize drawing lines and shapes on the canvas.\n2. **Extract Tasks**: Scan your sticky notes and compile them into action checklists.\n3. **General Knowledge**: Answer general questions regarding science, math, history, coding, and design.\n4. **Meeting Minutes**: Generate notes and logs from the current session.`;
+        } else if (lowerPrompt.startsWith('what') || lowerPrompt.startsWith('how') || lowerPrompt.startsWith('why') || lowerPrompt.startsWith('explain') || lowerPrompt.startsWith('who') || lowerPrompt.includes('?') || lowerPrompt.length > 15) {
+          // General question fallback template
+          fullText = `### Workspace Brainstorming: ${promptType} 🧠\n\nHere is a conceptual analysis for your query: **"${promptType}"**.\n\n#### 1. Contextual Definition\nThe topic **"${promptType}"** refers to a core domain subject. In collaborative design, breaking this down into modular steps enables team members to build shared understanding.\n\n#### 2. Key Considerations\n* **Research**: Gather structural facts and references to validate assumptions.\n* **Design**: Draw block diagrams on this whiteboard to outline flows or architectures.\n* **Tasks**: Drop sticky notes to assign specific follow-up actions to collaborators.\n\nWould you like me to generate a checklist of tasks or compile whiteboard session notes related to this topic?`;
         } else {
-          fullText = `I scanned the board for "${promptType}" but it is currently empty. Please drop some sticky notes or draw on the whiteboard, then ask me to summarize, extract tasks, or draft meeting notes!`;
+          // Context-aware board response
+          if (stickyTexts.length > 0) {
+            fullText = `I have analyzed the active workspace regarding your query: "${promptType}". Based on the sticky notes (${stickyTexts.map(t => `"${t}"`).join(', ')}):\n\n* **Discussion Theme**: It looks like you are collaborating on these items.\n* **Drawing Stats**: There are also ${drawingsCount} drawing lines or shapes on the canvas.\n\nWould you like me to compile notes, checklists, or summaries from these elements?`;
+          } else {
+            fullText = `I scanned the board for "${promptType}" but it is currently empty. Please drop some sticky notes or draw on the whiteboard, then ask me to summarize, extract tasks, or draft meeting notes!`;
+          }
         }
       }
     }
@@ -1673,55 +1728,132 @@ const Room = () => {
         {/* Right Sidebar - AI Assistant */}
         {isAiPanelOpen && (
           <aside className="glass-panel right-sidebar">
-            <div className="sidebar-header">
+            <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h3><Sparkles size={18} className="text-gradient" style={{marginRight: '0.5rem'}} /> LiveCollab AI</h3>
+              <button 
+                title="Gemini API Key Settings"
+                onClick={() => setShowApiKeySetting(!showApiKeySetting)} 
+                style={{ color: 'var(--text-secondary)', padding: '4px', cursor: 'pointer' }}
+                className="bounce-hover"
+              >
+                <Key size={16} className={geminiApiKey ? "text-gradient" : ""} />
+              </button>
             </div>
             
-            <div className="ai-prompts">
-              <button className="ai-btn bounce-hover" onClick={() => simulateAiResponse('summary')}><FileText size={14}/> Summarize Board</button>
-              <button className="ai-btn bounce-hover" onClick={() => simulateAiResponse('tasks')}><ListTodo size={14}/> Create Tasks</button>
-              <button className="ai-btn bounce-hover" onClick={() => simulateAiResponse('notes')}><CheckSquare size={14}/> Generate Notes</button>
-            </div>
-
-            <div className="ai-chat">
-              <div className="ai-chat-history" ref={aiChatHistoryRef}>
-                {aiMessages.map((msg, index) => (
-                  <div key={index} className={`message ${msg.role === 'user' ? 'me' : 'ai-msg'}`}>
-                    <span className="sender-name">{msg.role === 'user' ? 'You' : 'LiveCollab AI'}</span>
-                    <div className="bubble">
-                      {msg.text.split('\n').map((line, lIdx) => {
-                        if (line.startsWith('* ')) {
-                          return <li key={lIdx} style={{marginLeft: '1rem', listStyleType: 'disc'}}>{line.substring(2)}</li>;
-                        }
-                        if (line.startsWith('#### ') || line.startsWith('### ')) {
-                          return <h4 key={lIdx} style={{marginTop: '0.5rem', fontWeight: 600, color: 'var(--accent-primary)'}}>{line.replace(/#+\s+/, '')}</h4>;
-                        }
-                        return <p key={lIdx} style={{margin: '0.2rem 0'}}>{line}</p>;
-                      })}
-                    </div>
-                  </div>
-                ))}
-                {isAiLoading && (
-                  <div className="ai-typing-loader">
-                    <span></span><span></span><span></span>
-                  </div>
-                )}
-                <div ref={aiBottomRef} />
-              </div>
-              <form onSubmit={handleAiSend} className="ai-input-area">
-                <div className="input-group">
-                  <input 
-                    type="text" 
-                    value={aiInput}
-                    onChange={e => setAiInput(e.target.value)}
-                    placeholder="Ask AI to analyze board..." 
-                    className="input-glass" 
-                    disabled={isAiLoading}
-                  />
-                  <button type="submit" className="btn-send" disabled={isAiLoading}><Send size={16} /></button>
+            {(!geminiApiKey || showApiKeySetting) ? (
+              <div className="ai-key-config" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1, overflowY: 'auto' }}>
+                <h4 style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Key size={16} className="text-gradient" /> Gemini API Settings
+                </h4>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                  Connect your Google Gemini API Key to enable real-time whiteboard analysis, dynamic summaries, task extraction, and ask general knowledge questions.
+                </p>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  Get a free key from <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'underline' }}>Google AI Studio</a>.
                 </div>
-              </form>
-            </div>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  <input 
+                    type="password" 
+                    placeholder={geminiApiKey ? "••••••••••••••••" : "Paste your API key here..."} 
+                    value={tempApiKey}
+                    onChange={e => setTempApiKey(e.target.value)}
+                    className="input-glass"
+                    style={{ width: '100%' }}
+                  />
+                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                    <button 
+                      onClick={() => {
+                        if (tempApiKey.trim()) {
+                          localStorage.setItem('livecollab_gemini_key', tempApiKey.trim());
+                          setGeminiApiKey(tempApiKey.trim());
+                          setTempApiKey('');
+                          setShowApiKeySetting(false);
+                        }
+                      }} 
+                      className="btn-primary" 
+                      style={{ flex: 1, padding: '0.5rem 1rem', fontSize: '0.85rem' }}
+                    >
+                      Save Key
+                    </button>
+                    {geminiApiKey && (
+                      <button 
+                        onClick={() => {
+                          localStorage.removeItem('livecollab_gemini_key');
+                          setGeminiApiKey('');
+                          setTempApiKey('');
+                        }} 
+                        className="btn-danger" 
+                        style={{ flex: 1, padding: '0.5rem 1rem', fontSize: '0.85rem', background: 'rgba(239, 68, 68, 0.1)' }}
+                      >
+                        Clear Key
+                      </button>
+                    )}
+                  </div>
+                </div>
+                
+                {geminiApiKey && (
+                  <button 
+                    onClick={() => {
+                      setShowApiKeySetting(false);
+                      setTempApiKey('');
+                    }} 
+                    className="btn-secondary" 
+                    style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', width: '100%', marginTop: 'auto' }}
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="ai-prompts">
+                  <button className="ai-btn bounce-hover" onClick={() => simulateAiResponse('summary')}><FileText size={14}/> Summarize Board</button>
+                  <button className="ai-btn bounce-hover" onClick={() => simulateAiResponse('tasks')}><ListTodo size={14}/> Create Tasks</button>
+                  <button className="ai-btn bounce-hover" onClick={() => simulateAiResponse('notes')}><CheckSquare size={14}/> Generate Notes</button>
+                </div>
+
+                <div className="ai-chat">
+                  <div className="ai-chat-history" ref={aiChatHistoryRef}>
+                    {aiMessages.map((msg, index) => (
+                      <div key={index} className={`message ${msg.role === 'user' ? 'me' : 'ai-msg'}`}>
+                        <span className="sender-name">{msg.role === 'user' ? 'You' : 'LiveCollab AI'}</span>
+                        <div className="bubble">
+                          {msg.text.split('\n').map((line, lIdx) => {
+                            if (line.startsWith('* ')) {
+                              return <li key={lIdx} style={{marginLeft: '1rem', listStyleType: 'disc'}}>{line.substring(2)}</li>;
+                            }
+                            if (line.startsWith('#### ') || line.startsWith('### ')) {
+                              return <h4 key={lIdx} style={{marginTop: '0.5rem', fontWeight: 600, color: 'var(--accent-primary)'}}>{line.replace(/#+\s+/, '')}</h4>;
+                            }
+                            return <p key={lIdx} style={{margin: '0.2rem 0'}}>{line}</p>;
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                    {isAiLoading && (
+                      <div className="ai-typing-loader">
+                        <span></span><span></span><span></span>
+                      </div>
+                    )}
+                    <div ref={aiBottomRef} />
+                  </div>
+                  <form onSubmit={handleAiSend} className="ai-input-area">
+                    <div className="input-group">
+                      <input 
+                        type="text" 
+                        value={aiInput}
+                        onChange={e => setAiInput(e.target.value)}
+                        placeholder="Ask AI anything..." 
+                        className="input-glass" 
+                        disabled={isAiLoading}
+                      />
+                      <button type="submit" className="btn-send" disabled={isAiLoading}><Send size={16} /></button>
+                    </div>
+                  </form>
+                </div>
+              </>
+            )}
           </aside>
         )}
       </div>
