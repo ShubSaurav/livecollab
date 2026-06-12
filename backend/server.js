@@ -193,7 +193,7 @@ app.post('/api/room', handleCreateRoom);
 
 app.post('/api/ai', async (req, res) => {
   const { prompt } = req.body;
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
   if (!apiKey) {
     return res.status(400).json({ error: 'Gemini API key is not configured on the backend.' });
   }
@@ -226,7 +226,7 @@ app.post('/api/ai', async (req, res) => {
 });
 
 app.get('/api/ai/status', (req, res) => {
-  return res.json({ hasKey: !!process.env.GEMINI_API_KEY });
+  return res.json({ hasKey: !!(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY) });
 });
 
 app.get('/api/room/:roomId', async (req, res) => {
