@@ -578,9 +578,6 @@
 /* Brush controls panel */
 .brush-controls-panel {
   position: absolute;
-  left: 6.5rem;
-  top: 50%;
-  transform: translateY(-50%);
   padding: 0.85rem 1rem;
   display: flex;
   flex-direction: column;

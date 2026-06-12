@@ -118,6 +118,7 @@ const Room = () => {
     return {
       top: `${toolbarPosition.y}px`,
       left: `${toolbarPosition.x}px`,
+      transform: 'none',
       position: 'absolute'
     };
   };
@@ -134,6 +135,7 @@ const Room = () => {
     return {
       top: `${toolbarPosition.y + 55}px`,
       left: `${toolbarPosition.x}px`,
+      transform: 'none',
       position: 'absolute'
     };
   };
