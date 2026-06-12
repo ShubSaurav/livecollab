@@ -466,6 +466,7 @@ const Room = () => {
   const [tempApiKey, setTempApiKey] = useState('');
   const [showApiKeySetting, setShowApiKeySetting] = useState(false);
   const [hasBackendKey, setHasBackendKey] = useState(false);
+  const [redoStack, setRedoStack] = useState([]);
 
   // AI Panel Width, Opacity, and Blur Customizations
   const [aiPanelWidth, setAiPanelWidth] = useState(() => {
@@ -653,12 +654,20 @@ const Room = () => {
               redrawCanvas(next);
               return next;
             });
+            setRedoStack([]);
           }
+        }
+      } else if (data.type === 'draw_sync') {
+        if (data.drawActions) {
+          setDrawActions(data.drawActions);
+          redrawCanvas(data.drawActions);
+          setRedoStack([]);
         }
       } else if (data.type === 'clear_board') {
         setDrawActions([]);
         setStickyNotes([]);
         redrawCanvas([]);
+        setRedoStack([]);
       } else if (data.type === 'sticky_create') {
         if (data.note) {
           setStickyNotes(prev => [...prev.filter(n => n.id !== data.note.id), data.note]);
@@ -830,7 +839,7 @@ const Room = () => {
     });
   };
 
-  const redrawOverlayCanvas = (currentDrawingAction = null) => {
+  const redrawOverlayCanvas = (currentDrawingAction = null, hoverCoords = null) => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -860,6 +869,22 @@ const Room = () => {
         ctx.stroke();
       }
     });
+
+    // Draw brush size preview indicator circle on hover
+    if (hoverCoords && (activeTool === 'pen' || activeTool === 'eraser' || activeTool === 'laser')) {
+      ctx.beginPath();
+      const radius = activeTool === 'laser' ? 6 : brushSize / 2;
+      ctx.arc(hoverCoords.x, hoverCoords.y, radius, 0, 2 * Math.PI);
+      ctx.strokeStyle = activeTool === 'eraser' ? 'rgba(239, 68, 68, 0.7)' : activeTool === 'laser' ? 'rgba(239, 68, 68, 0.6)' : 'rgba(99, 102, 241, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      
+      // Draw a tiny center dot
+      ctx.beginPath();
+      ctx.arc(hoverCoords.x, hoverCoords.y, 1, 0, 2 * Math.PI);
+      ctx.fillStyle = activeTool === 'eraser' || activeTool === 'laser' ? 'rgba(239, 68, 68, 0.9)' : 'rgba(99, 102, 241, 0.9)';
+      ctx.fill();
+    }
   };
 
   // Canvas Handlers
@@ -891,22 +916,38 @@ const Room = () => {
   };
 
   const handleMouseMoveCanvas = (e) => {
-    // Sync remote cursor coordinates
-    if (ws && ws.readyState === WebSocket.OPEN && boardRef.current) {
-      const rect = boardRef.current.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      ws.send(JSON.stringify({ type: 'cursor', x, y, roomId }));
-    }
-
-    if (!isDrawing || activeTool === 'cursor') return;
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+
+    // Sync remote cursor coordinates
+    if (ws && ws.readyState === WebSocket.OPEN && boardRef.current) {
+      ws.send(JSON.stringify({ type: 'cursor', x, y, roomId }));
+    }
+
+    // Determine current drawing action or shape preview
+    let currentPreviewAction = null;
+    if (isDrawing && activeTool === 'shape') {
+      const width = x - startPointRef.current.x;
+      const height = y - startPointRef.current.y;
+      currentPreviewAction = {
+        tool: 'shape',
+        shapeType,
+        x: startPointRef.current.x,
+        y: startPointRef.current.y,
+        width,
+        height,
+        color: brushColor,
+        size: brushSize
+      };
+    }
+
+    // Redraw overlay canvas with the hover cursor outline
+    redrawOverlayCanvas(currentPreviewAction, { x, y });
+
+    if (!isDrawing || activeTool === 'cursor') return;
 
     if (activeTool === 'laser') {
       const newPoint = { x, y };
@@ -915,7 +956,7 @@ const Room = () => {
         ...prev.filter(trail => trail.id !== 'local'),
         { id: 'local', points: [...currentPathRef.current], timestamp: Date.now() }
       ]);
-      redrawOverlayCanvas();
+      redrawOverlayCanvas(null, { x, y });
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: 'laser',
@@ -928,38 +969,25 @@ const Room = () => {
       const newPoint = { x, y };
       currentPathRef.current.push(newPoint);
 
-      // Render local segment directly on bottom canvas for maximum speed
-      const action = {
-        tool: activeTool,
-        points: [prevPoint, newPoint],
-        color: activeTool === 'eraser' ? '#000' : brushColor,
-        size: brushSize
-      };
-      drawActionOnCtx(ctx, action);
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const action = {
+          tool: activeTool,
+          points: [prevPoint, newPoint],
+          color: activeTool === 'eraser' ? '#000' : brushColor,
+          size: brushSize
+        };
+        drawActionOnCtx(ctx, action);
 
-      // Sync preview to peer clients
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'draw',
-          action,
-          isPreview: true,
-          roomId
-        }));
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'draw',
+            action,
+            isPreview: true,
+            roomId
+          }));
+        }
       }
-    } else if (activeTool === 'shape') {
-      const width = x - startPointRef.current.x;
-      const height = y - startPointRef.current.y;
-      const previewAction = {
-        tool: 'shape',
-        shapeType,
-        x: startPointRef.current.x,
-        y: startPointRef.current.y,
-        width,
-        height,
-        color: brushColor,
-        size: brushSize
-      };
-      redrawOverlayCanvas(previewAction);
     }
   };
 
@@ -1007,7 +1035,8 @@ const Room = () => {
         redrawCanvas(next);
         return next;
       });
-      redrawOverlayCanvas(null); // Clear shape preview from top canvas
+      setRedoStack([]);
+      redrawOverlayCanvas(null, { x, y }); // Clear shape preview from top canvas, keeping the hover dot
 
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -1020,10 +1049,68 @@ const Room = () => {
     }
   };
 
+  const handleMouseLeaveCanvas = () => {
+    setIsDrawing(false);
+    redrawOverlayCanvas(null, null); // Clear brush outline cursor
+  };
+
+  const handleUndo = () => {
+    if (drawActions.length === 0) return;
+    const nextActions = [...drawActions];
+    const undoneAction = nextActions.pop();
+    
+    setDrawActions(nextActions);
+    setRedoStack(prev => [...prev, undoneAction]);
+    redrawCanvas(nextActions);
+    
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'draw_sync', drawActions: nextActions, roomId }));
+    }
+  };
+
+  const handleRedo = () => {
+    if (redoStack.length === 0) return;
+    const nextRedo = [...redoStack];
+    const redoneAction = nextRedo.pop();
+    const nextActions = [...drawActions, redoneAction];
+    
+    setDrawActions(nextActions);
+    setRedoStack(nextRedo);
+    redrawCanvas(nextActions);
+    
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'draw_sync', drawActions: nextActions, roomId }));
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Don't trigger shortcuts if user is typing in inputs or textareas
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+      
+      const isCmdOrCtrl = e.metaKey || e.ctrlKey;
+      if (isCmdOrCtrl && e.key.toLowerCase() === 'z') {
+        if (e.shiftKey) {
+          e.preventDefault();
+          handleRedo();
+        } else {
+          e.preventDefault();
+          handleUndo();
+        }
+      } else if (isCmdOrCtrl && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [drawActions, redoStack, ws, roomId]);
+
   const clearWhiteboard = () => {
     if (window.confirm('Are you sure you want to clear the collaborative whiteboard?')) {
       setDrawActions([]);
       setStickyNotes([]);
+      setRedoStack([]);
       redrawCanvas([]);
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'clear_board', roomId }));
@@ -1723,7 +1810,7 @@ const Room = () => {
               onMouseDown={handleMouseDownCanvas}
               onMouseMove={handleMouseMoveCanvas}
               onMouseUp={handleMouseUpCanvas}
-              onMouseLeave={handleMouseUpCanvas}
+              onMouseLeave={handleMouseLeaveCanvas}
             />
 
             {/* Whiteboard Toolbar */}
@@ -1775,6 +1862,11 @@ const Room = () => {
                 </div>
                 <div className="tool-divider"></div>
                 
+                <div className="tool-divider"></div>
+                <button title="Undo (Ctrl+Z)" onClick={handleUndo} disabled={drawActions.length === 0} className="tool-btn bounce-hover" style={{ opacity: drawActions.length === 0 ? 0.4 : 1 }}><Undo size={18} /></button>
+                <button title="Redo (Ctrl+Y)" onClick={handleRedo} disabled={redoStack.length === 0} className="tool-btn bounce-hover" style={{ opacity: redoStack.length === 0 ? 0.4 : 1 }}><Redo size={18} /></button>
+                <div className="tool-divider"></div>
+
                 <button title="Clear Whiteboard" onClick={clearWhiteboard} className="tool-btn bounce-hover text-danger"><Trash2 size={18} /></button>
               </div>
             )}
@@ -1842,6 +1934,30 @@ const Room = () => {
                     onTouchEnd={() => setShowBrushPanel(false)}
                     className="size-slider"
                   />
+                  <div className="size-presets" style={{ display: 'flex', gap: '0.4rem', marginTop: '0.5rem' }}>
+                    {[4, 8, 16, 24].map(sz => (
+                      <button
+                        key={sz}
+                        className={`btn-secondary ${brushSize === sz ? 'selected-preset' : ''}`}
+                        onClick={() => {
+                          setBrushSize(sz);
+                          setShowBrushPanel(false);
+                        }}
+                        style={{
+                          padding: '2px 8px',
+                          fontSize: '0.75rem',
+                          flex: 1,
+                          textAlign: 'center',
+                          borderRadius: '6px',
+                          border: brushSize === sz ? '1px solid var(--accent-primary)' : '1px solid rgba(255, 255, 255, 0.1)',
+                          background: brushSize === sz ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255, 255, 255, 0.05)',
+                          color: brushSize === sz ? 'var(--accent-primary)' : 'var(--text-secondary)'
+                        }}
+                      >
+                        {sz}px
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}
@@ -1871,6 +1987,7 @@ const Room = () => {
                         setTimeout(() => redrawCanvas(next), 0);
                         return next;
                       });
+                      setRedoStack([]);
                     }
                     setIsTypingText(false);
                   } else if (e.key === 'Escape') {
@@ -1895,6 +2012,7 @@ const Room = () => {
                       setTimeout(() => redrawCanvas(next), 0);
                       return next;
                     });
+                    setRedoStack([]);
                   }
                   setIsTypingText(false);
                 }}
