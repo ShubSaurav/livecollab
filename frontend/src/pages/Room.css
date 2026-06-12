@@ -487,7 +487,9 @@
 }
 
 .ai-msg {
-  padding: 1rem;
+  padding: 0.2rem 0;
+  max-width: 100%;
+  width: 100%;
 }
 
 .ai-msg .bubble {
@@ -496,6 +498,7 @@
   color: var(--text-primary);
   font-size: 0.85rem;
   border-bottom-left-radius: 4px;
+  padding: 0.8rem 1rem;
 }
 
 .ai-input-area {
