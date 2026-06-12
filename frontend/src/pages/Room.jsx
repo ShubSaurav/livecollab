@@ -12,6 +12,202 @@ import { wsBaseUrl, apiBaseUrl } from '../config';
 import { ThemeContext } from '../App';
 import './Room.css';
 
+const renderMarkdown = (text) => {
+  if (!text) return null;
+
+  // Split text by lines
+  const lines = text.split('\n');
+  const elements = [];
+  let inCodeBlock = false;
+  let codeBlockLines = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Handle code blocks
+    if (line.trim().startsWith('```')) {
+      if (inCodeBlock) {
+        // Close code block
+        elements.push(
+          <pre key={`code-${i}`} style={{
+            background: 'rgba(0, 0, 0, 0.35)',
+            padding: '0.6rem 0.9rem',
+            borderRadius: '6px',
+            fontFamily: 'monospace',
+            fontSize: '0.8rem',
+            overflowX: 'auto',
+            margin: '0.6rem 0',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            color: '#34d399',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all'
+          }}>
+            <code>{codeBlockLines.join('\n')}</code>
+          </pre>
+        );
+        codeBlockLines = [];
+        inCodeBlock = false;
+      } else {
+        inCodeBlock = true;
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeBlockLines.push(line);
+      continue;
+    }
+
+    // Process inline markdown (bold **text**, inline code `code`)
+    const processInline = (str) => {
+      let parts = [{ type: 'text', content: str }];
+      const boldRegex = /\*\*([^*]+)\*\*/g;
+      const codeRegex = /`([^`]+)`/g;
+
+      // Parse bold first
+      let newParts = [];
+      parts.forEach(part => {
+        if (part.type === 'text') {
+          let lastIndex = 0;
+          let match;
+          const content = part.content;
+          boldRegex.lastIndex = 0;
+          while ((match = boldRegex.exec(content)) !== null) {
+            if (match.index > lastIndex) {
+              newParts.push({ type: 'text', content: content.substring(lastIndex, match.index) });
+            }
+            newParts.push({ type: 'bold', content: match[1] });
+            lastIndex = boldRegex.lastIndex;
+          }
+          if (lastIndex < content.length) {
+            newParts.push({ type: 'text', content: content.substring(lastIndex) });
+          }
+        } else {
+          newParts.push(part);
+        }
+      });
+      parts = newParts;
+
+      // Parse inline code
+      newParts = [];
+      parts.forEach(part => {
+        if (part.type === 'text') {
+          let lastIndex = 0;
+          let match;
+          const content = part.content;
+          codeRegex.lastIndex = 0;
+          while ((match = codeRegex.exec(content)) !== null) {
+            if (match.index > lastIndex) {
+              newParts.push({ type: 'text', content: content.substring(lastIndex, match.index) });
+            }
+            newParts.push({ type: 'code', content: match[1] });
+            lastIndex = codeRegex.lastIndex;
+          }
+          if (lastIndex < content.length) {
+            newParts.push({ type: 'text', content: content.substring(lastIndex) });
+          }
+        } else {
+          newParts.push(part);
+        }
+      });
+      parts = newParts;
+
+      return parts.map((part, index) => {
+        if (part.type === 'bold') {
+          return <strong key={index} style={{ fontWeight: 700, color: 'var(--accent-primary)' }}>{part.content}</strong>;
+        }
+        if (part.type === 'code') {
+          return <code key={index} style={{
+            background: 'rgba(255, 255, 255, 0.1)',
+            padding: '2px 4px',
+            borderRadius: '4px',
+            fontFamily: 'monospace',
+            fontSize: '0.85em',
+            color: '#e0f2fe'
+          }}>{part.content}</code>;
+        }
+        return part.content;
+      });
+    };
+
+    // Headings (#, ##, ###, ####)
+    if (line.startsWith('# ') || line.startsWith('## ') || line.startsWith('### ') || line.startsWith('#### ')) {
+      const level = line.indexOf(' ');
+      const textVal = line.substring(level + 1);
+      const headingStyle = {
+        marginTop: '0.8rem',
+        marginBottom: '0.4rem',
+        fontWeight: 700,
+        color: 'var(--accent-primary)',
+        textShadow: '0 0 10px rgba(99, 102, 241, 0.2)',
+        borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+        paddingBottom: '0.2rem',
+        fontSize: level === 1 ? '1.25rem' : level === 2 ? '1.15rem' : '1.05rem',
+        lineHeight: '1.3'
+      };
+      
+      if (level === 1) {
+        elements.push(<h1 key={i} style={headingStyle}>{processInline(textVal)}</h1>);
+      } else if (level === 2) {
+        elements.push(<h2 key={i} style={headingStyle}>{processInline(textVal)}</h2>);
+      } else if (level === 3) {
+        elements.push(<h3 key={i} style={headingStyle}>{processInline(textVal)}</h3>);
+      } else {
+        elements.push(<h4 key={i} style={headingStyle}>{processInline(textVal)}</h4>);
+      }
+      continue;
+    }
+
+    // Bullet list items (* or -)
+    const listMatch = line.match(/^(\s*)([*+-])\s+(.*)$/);
+    if (listMatch) {
+      const indent = listMatch[1].length;
+      const content = listMatch[3];
+      elements.push(
+        <li key={i} style={{
+          marginLeft: `${indent + 1}rem`,
+          listStyleType: 'disc',
+          margin: '0.3rem 0',
+          lineHeight: '1.45'
+        }}>
+          {processInline(content)}
+        </li>
+      );
+      continue;
+    }
+
+    // Numbered lists (e.g. 1. item)
+    const numListMatch = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
+    if (numListMatch) {
+      const indent = numListMatch[1].length;
+      const num = numListMatch[2];
+      const content = numListMatch[3];
+      elements.push(
+        <div key={i} style={{
+          marginLeft: `${indent + 0.5}rem`,
+          display: 'flex',
+          gap: '0.3rem',
+          margin: '0.3rem 0',
+          lineHeight: '1.45'
+        }}>
+          <span style={{ fontWeight: 600, color: 'var(--accent-primary)' }}>{num}.</span>
+          <span style={{ flex: 1 }}>{processInline(content)}</span>
+        </div>
+      );
+      continue;
+    }
+
+    // Standard paragraph
+    if (line.trim().length > 0) {
+      elements.push(<p key={i} style={{ margin: '0.4rem 0', lineHeight: '1.45' }}>{processInline(line)}</p>);
+    } else {
+      elements.push(<div key={i} style={{ height: '0.4rem' }} />);
+    }
+  }
+
+  return elements;
+};
+
 const Room = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -1857,16 +2053,8 @@ const Room = () => {
                     {aiMessages.map((msg, index) => (
                       <div key={index} className={`message ${msg.role === 'user' ? 'me' : 'ai-msg'}`}>
                         <span className="sender-name">{msg.role === 'user' ? 'You' : 'LiveCollab AI'}</span>
-                        <div className="bubble">
-                          {msg.text.split('\n').map((line, lIdx) => {
-                            if (line.startsWith('* ')) {
-                              return <li key={lIdx} style={{marginLeft: '1rem', listStyleType: 'disc'}}>{line.substring(2)}</li>;
-                            }
-                            if (line.startsWith('#### ') || line.startsWith('### ')) {
-                              return <h4 key={lIdx} style={{marginTop: '0.5rem', fontWeight: 600, color: 'var(--accent-primary)'}}>{line.replace(/#+\s+/, '')}</h4>;
-                            }
-                            return <p key={lIdx} style={{margin: '0.2rem 0'}}>{line}</p>;
-                          })}
+                        <div className="bubble" style={{ textAlign: 'left' }}>
+                          {renderMarkdown(msg.text)}
                         </div>
                       </div>
                     ))}
