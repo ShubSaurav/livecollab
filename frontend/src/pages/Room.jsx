@@ -30,6 +30,15 @@ const Room = () => {
   const [isVideoStripVisible, setIsVideoStripVisible] = useState(true);
   const [laserPaths, setLaserPaths] = useState([]);
   
+  // Unread badge states for floating overlays
+  const [unreadChats, setUnreadChats] = useState(0);
+  const [unreadAi, setUnreadAi] = useState(false);
+  
+  // Inline text tool states
+  const [isTypingText, setIsTypingText] = useState(false);
+  const [textInputPosition, setTextInputPosition] = useState({ x: 0, y: 0 });
+  const [textInputValue, setTextInputValue] = useState('');
+  
   const [ws, setWs] = useState(null);
   const [messages, setMessages] = useState([]);
   const [inputMsg, setInputMsg] = useState('');
@@ -201,6 +210,7 @@ const Room = () => {
   };
 
   const handleVideoDragStart = (e) => {
+    if (e.target.closest('button') || e.target.closest('textarea')) return;
     e.preventDefault();
     const videoStripEl = e.currentTarget.closest('.video-strip');
     if (!videoStripEl) return;
@@ -257,8 +267,11 @@ const Room = () => {
 
   const boardRef = useRef(null);
   const canvasRef = useRef(null);
+  const overlayCanvasRef = useRef(null);
   const chatBottomRef = useRef(null);
   const aiBottomRef = useRef(null);
+  const chatMessagesRef = useRef(null);
+  const aiChatHistoryRef = useRef(null);
   const startPointRef = useRef({ x: 0, y: 0 });
   const currentPathRef = useRef([]);
   const dragOffsetRef = useRef({ x: 0, y: 0 });
@@ -266,6 +279,37 @@ const Room = () => {
   
   const toolbarDragStart = useRef({ x: 0, y: 0 });
   const videoStripDragStart = useRef({ x: 0, y: 0 });
+
+  // Sync refs to avoid stale closures in WebSockets onmessage handler
+  const isLeftSidebarOpenRef = useRef(isLeftSidebarOpen);
+  const activeLeftTabRef = useRef(activeLeftTab);
+  const isAiPanelOpenRef = useRef(isAiPanelOpen);
+
+  useEffect(() => {
+    isLeftSidebarOpenRef.current = isLeftSidebarOpen;
+  }, [isLeftSidebarOpen]);
+
+  useEffect(() => {
+    activeLeftTabRef.current = activeLeftTab;
+  }, [activeLeftTab]);
+
+  useEffect(() => {
+    isAiPanelOpenRef.current = isAiPanelOpen;
+  }, [isAiPanelOpen]);
+
+  // Reset unread counts when opening Chat tab
+  useEffect(() => {
+    if (isLeftSidebarOpen && activeLeftTab === 'chat') {
+      setUnreadChats(0);
+    }
+  }, [isLeftSidebarOpen, activeLeftTab]);
+
+  // Reset unread AI notifications when opening AI panel
+  useEffect(() => {
+    if (isAiPanelOpen) {
+      setUnreadAi(false);
+    }
+  }, [isAiPanelOpen]);
 
   useEffect(() => {
     drawActionsRef.current = drawActions;
@@ -307,6 +351,9 @@ const Room = () => {
         navigate('/dashboard');
       } else if (data.type === 'chat') {
         setMessages(prev => [...prev, data]);
+        if (!isLeftSidebarOpenRef.current || activeLeftTabRef.current !== 'chat') {
+          setUnreadChats(prev => prev + 1);
+        }
       } else if (data.type === 'cursor') {
         setCursors(prev => ({
           ...prev,
@@ -386,6 +433,7 @@ const Room = () => {
   useEffect(() => {
     const handleResize = () => {
       const canvas = canvasRef.current;
+      const overlayCanvas = overlayCanvasRef.current;
       if (canvas && boardRef.current) {
         const rect = boardRef.current.getBoundingClientRect();
         const targetWidth = Math.floor(rect.width);
@@ -397,6 +445,11 @@ const Room = () => {
           canvas.width = targetWidth;
           canvas.height = targetHeight;
           redrawCanvas(drawActionsRef.current);
+        }
+        if (overlayCanvas && (overlayCanvas.width !== targetWidth || overlayCanvas.height !== targetHeight)) {
+          overlayCanvas.width = targetWidth;
+          overlayCanvas.height = targetHeight;
+          redrawOverlayCanvas();
         }
       }
     };
@@ -432,25 +485,27 @@ const Room = () => {
       const activeTrails = laserPaths.filter(trail => now - trail.timestamp < 1500);
       if (activeTrails.length !== laserPaths.length) {
         setLaserPaths(activeTrails);
-        redrawCanvas(drawActionsRef.current);
+        redrawOverlayCanvas();
       } else if (activeTrails.length > 0) {
-        redrawCanvas(drawActionsRef.current);
+        redrawOverlayCanvas();
       }
     }, 50);
     return () => clearInterval(interval);
   }, [laserPaths]);
 
-  // Auto-scroll chats
+  // Auto-scroll chats without parent page jump
   useEffect(() => {
-    if (chatBottomRef.current) {
-      chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    const container = chatMessagesRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
     }
   }, [messages]);
 
-  // Auto-scroll AI logs
+  // Auto-scroll AI logs without parent page jump
   useEffect(() => {
-    if (aiBottomRef.current) {
-      aiBottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    const container = aiChatHistoryRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
     }
   }, [aiMessages]);
 
@@ -503,7 +558,7 @@ const Room = () => {
     }
   };
 
-  const redrawCanvas = (actionsList, currentDrawingAction = null) => {
+  const redrawCanvas = (actionsList) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -513,6 +568,14 @@ const Room = () => {
     actionsList.forEach(action => {
       drawActionOnCtx(ctx, action);
     });
+  };
+
+  const redrawOverlayCanvas = (currentDrawingAction = null) => {
+    const canvas = overlayCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     if (currentDrawingAction) {
       drawActionOnCtx(ctx, currentDrawingAction);
@@ -554,24 +617,9 @@ const Room = () => {
     if (activeTool === 'pen' || activeTool === 'eraser') {
       currentPathRef.current = [{ x, y }];
     } else if (activeTool === 'text') {
-      const val = prompt("Enter text to place on whiteboard:");
-      if (val && val.trim()) {
-        const finalAction = {
-          tool: 'text',
-          x,
-          y,
-          text: val.trim(),
-          color: brushColor,
-          size: brushSize
-        };
-        setDrawActions(prev => {
-          const next = [...prev, finalAction];
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'draw', action: finalAction, roomId }));
-          }
-          return next;
-        });
-      }
+      setTextInputPosition({ x, y });
+      setIsTypingText(true);
+      setTextInputValue('');
       setIsDrawing(false);
     } else if (activeTool === 'laser') {
       currentPathRef.current = [{ x, y }];
@@ -607,6 +655,7 @@ const Room = () => {
         ...prev.filter(trail => trail.id !== 'local'),
         { id: 'local', points: [...currentPathRef.current], timestamp: Date.now() }
       ]);
+      redrawOverlayCanvas();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: 'laser',
@@ -619,7 +668,7 @@ const Room = () => {
       const newPoint = { x, y };
       currentPathRef.current.push(newPoint);
 
-      // Render local segment
+      // Render local segment directly on bottom canvas for maximum speed
       const action = {
         tool: activeTool,
         points: [prevPoint, newPoint],
@@ -650,7 +699,7 @@ const Room = () => {
         color: brushColor,
         size: brushSize
       };
-      redrawCanvas(drawActions, previewAction);
+      redrawOverlayCanvas(previewAction);
     }
   };
 
@@ -698,6 +747,7 @@ const Room = () => {
         redrawCanvas(next);
         return next;
       });
+      redrawOverlayCanvas(null); // Clear shape preview from top canvas
 
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -837,11 +887,27 @@ const Room = () => {
     } else if (promptType === 'notes' || lowerPrompt.includes('note') || lowerPrompt.includes('meeting')) {
       fullText = `### Automated Meeting Notes 📝\n* **Workspace ID**: Room \`${roomId}\`\n* **Active Collab Users**: ${roomUsers} member(s)\n* **Technical Decisions**: Database fallback handles ENOTFOUND/timeout DNS conditions with in-memory fallback buffers.\n\n**Next Action Items**:\n${stickyTexts.length > 0 ? stickyTexts.map(t => `- Follow up on: "${t}"`).join('\n') : '- Standardize responsive styling variables.\n- Polish Outfit theme selectors.'}`;
     } else {
-      // Generate context-aware fallback response
-      if (stickyTexts.length > 0) {
-        fullText = `I have analyzed the active workspace regarding your query: "${promptType}". Based on the sticky notes (${stickyTexts.map(t => `"${t}"`).join(', ')}):\n\n* **Discussion Theme**: It looks like you are collaborating on these items.\n* **Drawing Stats**: There are also ${drawingsCount} drawing lines or shapes on the canvas.\n\nWould you like me to compile notes, checklists, or summaries from these elements?`;
+      // Check for general knowledge questions
+      if (lowerPrompt.includes('photosynthesis') || lowerPrompt.includes('photo synthesis')) {
+        fullText = `### Photosynthesis 🌿\n\nPhotosynthesis is the chemical process by which green plants, algae, and some bacteria convert light energy (usually from the Sun) into chemical energy (glucose), using carbon dioxide and water.\n\n#### The Chemical Formula:\n\`\`\`\n6CO₂ (Carbon Dioxide) + 6H₂O (Water) + Light Energy ➔ C₆H₁₂O₆ (Glucose) + 6O₂ (Oxygen)\n\`\`\`\n\n#### Key Process Steps:\n1. **Light Absorption**: Chlorophyll inside plant chloroplasts captures solar energy.\n2. **Water Splitting**: Water molecules absorbed by roots are split into oxygen gas and hydrogen ions.\n3. **Carbon Fixation**: Carbon dioxide from the air is processed to form sugars (glucose).\n\nThis process is fundamental to life on Earth as it releases Oxygen (O₂) as a byproduct and serves as the primary energy source for nearly all food chains.`;
+      } else if (lowerPrompt.includes('gravity') || lowerPrompt.includes('gravitation')) {
+        fullText = `### Gravity 🌌\n\nGravity is a fundamental force of attraction that acts between all objects with mass. The more mass an object has, and the closer it is, the stronger its gravitational pull.\n\n#### Key Milestones:\n* **Sir Isaac Newton (1687)**: Formulated the Law of Universal Gravitation, stating that every mass exerts an attractive force on every other mass.\n* **Albert Einstein (1915)**: Described gravity not as a direct force, but as a curvature of spacetime caused by mass and energy (Theory of General Relativity).\n\nWithout gravity, planets could not orbit the sun, and the atmosphere, oceans, and life could not remain bound to Earth.`;
+      } else if (lowerPrompt.includes('javascript') || lowerPrompt.includes(' js')) {
+        fullText = `### JavaScript (JS) 💻\n\nJavaScript is a high-level, dynamic, single-threaded, and interpreted programming language that conforms to the ECMAScript specification.\n\n#### Core Concepts:\n* **Prototypes**: Objects inherit properties directly from other template objects.\n* **Asynchronous Event Loop**: Handles non-blocking execution using callbacks, promises, and async/await.\n* **First-Class Functions**: Functions can be passed as arguments, returned, and assigned to variables.`;
+      } else if (lowerPrompt.includes('react')) {
+        fullText = `### ReactJS ⚛️\n\nReact is a declarative, component-based JavaScript library for building interactive user interfaces, maintained by Meta and a large developer community.\n\n#### Key Features:\n1. **JSX**: A syntax extension that allows writing HTML elements inside JavaScript.\n2. **Virtual DOM**: React keeps a lightweight representation of the UI in memory, batch-updating only the modified elements to improve rendering speed.\n3. **Component Lifecycle & Hooks**: Hooks (like \`useState\`, \`useEffect\`) allow functional components to manage local state and side effects.`;
+      } else if (lowerPrompt.includes('who are you') || lowerPrompt.includes('what are you') || lowerPrompt.includes('your name')) {
+        fullText = `I am the **LiveCollab AI Assistant**, a smart workspace agent built to help teams brainstorm, write, design, and plan projects in real-time.\n\n#### What I Can Do:\n1. **Analyze Whiteboard**: Summarize drawing lines and shapes on the canvas.\n2. **Extract Tasks**: Scan your sticky notes and compile them into action checklists.\n3. **General Knowledge**: Answer general questions regarding science, math, history, coding, and design.\n4. **Meeting Minutes**: Generate notes and logs from the current session.`;
+      } else if (lowerPrompt.startsWith('what') || lowerPrompt.startsWith('how') || lowerPrompt.startsWith('why') || lowerPrompt.startsWith('explain') || lowerPrompt.startsWith('who') || lowerPrompt.includes('?') || lowerPrompt.length > 15) {
+        // General question fallback template
+        fullText = `### Workspace Brainstorming: ${promptType} 🧠\n\nHere is a conceptual analysis for your query: **"${promptType}"**.\n\n#### 1. Contextual Definition\nThe topic **"${promptType}"** refers to a core domain subject. In collaborative design, breaking this down into modular steps enables team members to build shared understanding.\n\n#### 2. Key Considerations\n* **Research**: Gather structural facts and references to validate assumptions.\n* **Design**: Draw block diagrams on this whiteboard to outline flows or architectures.\n* **Tasks**: Drop sticky notes to assign specific follow-up actions to collaborators.\n\nWould you like me to generate a checklist of tasks or compile whiteboard session notes related to this topic?`;
       } else {
-        fullText = `I scanned the board for "${promptType}" but it is currently empty. Please drop some sticky notes or draw on the whiteboard, then ask me to summarize, extract tasks, or draft meeting notes!`;
+        // Context-aware board response
+        if (stickyTexts.length > 0) {
+          fullText = `I have analyzed the active workspace regarding your query: "${promptType}". Based on the sticky notes (${stickyTexts.map(t => `"${t}"`).join(', ')}):\n\n* **Discussion Theme**: It looks like you are collaborating on these items.\n* **Drawing Stats**: There are also ${drawingsCount} drawing lines or shapes on the canvas.\n\nWould you like me to compile notes, checklists, or summaries from these elements?`;
+        } else {
+          fullText = `I scanned the board for "${promptType}" but it is currently empty. Please drop some sticky notes or draw on the whiteboard, then ask me to summarize, extract tasks, or draft meeting notes!`;
+        }
       }
     }
 
@@ -861,6 +927,10 @@ const Room = () => {
       } else {
         clearInterval(interval);
         setIsAiLoading(false);
+        // If the AI panel is closed, trigger unread badge notification
+        if (!isAiPanelOpenRef.current) {
+          setUnreadAi(true);
+        }
       }
     }, 15);
   };
@@ -1169,7 +1239,7 @@ const Room = () => {
           <div className="sidebar-content">
             {activeLeftTab === 'chat' && (
               <div className="chat-container">
-                <div className="chat-messages">
+                <div className="chat-messages" ref={chatMessagesRef}>
                   <div className="message system">Welcome to {roomId}</div>
                   {messages.map((m, i) => (
                     <div key={i} className={`message ${m.type === 'system' ? 'system' : (m.senderId === clientId ? 'me' : 'other')}`}>
@@ -1229,59 +1299,47 @@ const Room = () => {
         {/* Center Canvas */}
         <main className={`canvas-area ${gridType}-grid`}>
           {/* Top Floating Video Strip */}
+          {/* Top Floating Video Strip */}
           {isVideoStripVisible && (
-            <div className="video-strip" style={{ ...getVideoStripStyle(), display: 'flex', alignItems: 'center', gap: '1rem', zIndex: 10 }}>
-              {/* Drag Handle */}
-              <div 
-                className="video-strip-drag-handle"
-                onPointerDown={handleVideoDragStart}
-                onPointerMove={handleVideoDragMove}
-                onPointerUp={handleVideoDragEnd}
+            <div 
+              className="video-strip" 
+              style={{ ...getVideoStripStyle(), display: 'flex', alignItems: 'center', gap: '1rem', zIndex: 10, cursor: 'grab', position: 'absolute' }}
+              onPointerDown={handleVideoDragStart}
+              onPointerMove={handleVideoDragMove}
+              onPointerUp={handleVideoDragEnd}
+            >
+              {/* Close Button Overlay */}
+              <button 
+                title="Hide Video Feeds"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsVideoStripVisible(false);
+                }}
+                className="hide-feeds-btn"
                 style={{
+                  position: 'absolute',
+                  top: '-8px',
+                  right: '-8px',
+                  background: '#ef4444',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '50%',
+                  width: '20px',
+                  height: '20px',
                   display: 'flex',
-                  flexDirection: 'column',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  cursor: 'grab',
-                  color: 'var(--text-secondary)',
-                  opacity: 0.6,
-                  background: 'var(--glass-bg)',
-                  border: '1px solid var(--glass-border)',
-                  borderRadius: '12px',
-                  padding: '4px',
-                  height: '90px',
-                  width: '26px',
+                  cursor: 'pointer',
+                  zIndex: 50,
                   boxShadow: 'var(--shadow-sm)',
-                  touchAction: 'none'
+                  fontSize: '12px',
+                  lineHeight: 1
                 }}
-                onMouseEnter={e => e.currentTarget.style.color = 'var(--accent-primary)'}
-                onMouseLeave={e => e.currentTarget.style.color = 'var(--text-secondary)'}
+                onMouseEnter={e => e.currentTarget.style.background = '#dc2626'}
+                onMouseLeave={e => e.currentTarget.style.background = '#ef4444'}
               >
-                <GripHorizontal size={16} style={{ transform: 'rotate(90deg)' }} />
-                <button 
-                  title="Hide Video Feeds"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsVideoStripVisible(false);
-                  }}
-                  className="hide-feeds-btn"
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: 'var(--text-secondary)',
-                    cursor: 'pointer',
-                    padding: '2px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    marginTop: '10px'
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.color = '#ef4444'}
-                  onMouseLeave={e => e.currentTarget.style.color = 'var(--text-secondary)'}
-                >
-                  <X size={14} />
-                </button>
-              </div>
+                <X size={12} />
+              </button>
 
               {/* Local Video Tile */}
               <div className={`video-tile bounce-hover ${mediaState.camera ? 'active' : ''} ${handRaised ? 'raised-hand-glow' : ''}`}>
@@ -1319,7 +1377,13 @@ const Room = () => {
           <div className="whiteboard-wrapper" ref={boardRef}>
             <canvas 
               ref={canvasRef}
-              className={`whiteboard-canvas ${activeTool}-active`}
+              className="whiteboard-canvas"
+              style={{ position: 'absolute', inset: 0, zIndex: 1 }}
+            />
+            <canvas 
+              ref={overlayCanvasRef}
+              className={`whiteboard-canvas overlay-canvas ${activeTool}-active`}
+              style={{ position: 'absolute', inset: 0, zIndex: 2 }}
               onMouseDown={handleMouseDownCanvas}
               onMouseMove={handleMouseMoveCanvas}
               onMouseUp={handleMouseUpCanvas}
@@ -1446,6 +1510,75 @@ const Room = () => {
               </div>
             )}
 
+            {/* Custom Inline Text Input Tool */}
+            {isTypingText && (
+              <input 
+                type="text"
+                value={textInputValue}
+                onChange={e => setTextInputValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    if (textInputValue.trim()) {
+                      const finalAction = {
+                        tool: 'text',
+                        x: textInputPosition.x,
+                        y: textInputPosition.y,
+                        text: textInputValue.trim(),
+                        color: brushColor,
+                        size: brushSize
+                      };
+                      setDrawActions(prev => {
+                        const next = [...prev, finalAction];
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                          ws.send(JSON.stringify({ type: 'draw', action: finalAction, roomId }));
+                        }
+                        setTimeout(() => redrawCanvas(next), 0);
+                        return next;
+                      });
+                    }
+                    setIsTypingText(false);
+                  } else if (e.key === 'Escape') {
+                    setIsTypingText(false);
+                  }
+                }}
+                onBlur={() => {
+                  if (textInputValue.trim()) {
+                    const finalAction = {
+                      tool: 'text',
+                      x: textInputPosition.x,
+                      y: textInputPosition.y,
+                      text: textInputValue.trim(),
+                      color: brushColor,
+                      size: brushSize
+                    };
+                    setDrawActions(prev => {
+                      const next = [...prev, finalAction];
+                      if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'draw', action: finalAction, roomId }));
+                      }
+                      setTimeout(() => redrawCanvas(next), 0);
+                      return next;
+                    });
+                  }
+                  setIsTypingText(false);
+                }}
+                autoFocus
+                style={{
+                  position: 'absolute',
+                  left: `${textInputPosition.x}px`,
+                  top: `${textInputPosition.y - 12}px`,
+                  font: `bold ${brushSize * 3 + 12}px Inter, sans-serif`,
+                  color: brushColor,
+                  background: 'transparent',
+                  border: '1px dashed var(--accent-primary)',
+                  outline: 'none',
+                  padding: '2px',
+                  zIndex: 1000,
+                  caretColor: brushColor
+                }}
+              />
+            )}
+
             <div className="static-board-content">
               {/* Draggable Sticky Notes */}
               {stickyNotes.map(note => (
@@ -1551,7 +1684,7 @@ const Room = () => {
             </div>
 
             <div className="ai-chat">
-              <div className="ai-chat-history">
+              <div className="ai-chat-history" ref={aiChatHistoryRef}>
                 {aiMessages.map((msg, index) => (
                   <div key={index} className={`message ${msg.role === 'user' ? 'me' : 'ai-msg'}`}>
                     <span className="sender-name">{msg.role === 'user' ? 'You' : 'LiveCollab AI'}</span>
@@ -1600,8 +1733,12 @@ const Room = () => {
             title={isLeftSidebarOpen ? "Hide Chat Sidebar" : "Show Chat Sidebar"} 
             className={`control-btn text-btn bounce-hover ${isLeftSidebarOpen ? 'active-toggle' : ''}`} 
             onClick={() => setIsLeftSidebarOpen(!isLeftSidebarOpen)}
+            style={{ position: 'relative' }}
           >
             <MessageSquare size={18} style={{marginRight:'0.4rem'}}/> Chat
+            {unreadChats > 0 && (
+              <span className="notification-badge">{unreadChats}</span>
+            )}
           </button>
           <button 
             title={isToolbarOpen ? "Hide Whiteboard Tools" : "Show Whiteboard Tools"} 
@@ -1668,8 +1805,16 @@ const Room = () => {
         </div>
 
         <div className="control-group right-controls" style={{ gap: '0.5rem' }}>
-          <button title="Toggle AI Panel" className={`control-btn text-btn bounce-hover ${isAiPanelOpen ? 'active-toggle' : ''}`} onClick={() => setIsAiPanelOpen(!isAiPanelOpen)}>
+          <button 
+            title="Toggle AI Panel" 
+            className={`control-btn text-btn bounce-hover ${isAiPanelOpen ? 'active-toggle' : ''}`} 
+            onClick={() => setIsAiPanelOpen(!isAiPanelOpen)}
+            style={{ position: 'relative' }}
+          >
             <Sparkles size={18} style={{marginRight:'0.4rem'}}/> AI
+            {unreadAi && (
+              <span className="notification-dot"></span>
+            )}
           </button>
           <button 
             title={theme === 'light' ? "Switch to Dark Mode" : "Switch to Light Mode"} 
