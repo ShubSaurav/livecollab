@@ -467,6 +467,52 @@ const Room = () => {
   const [showApiKeySetting, setShowApiKeySetting] = useState(false);
   const [hasBackendKey, setHasBackendKey] = useState(false);
 
+  // AI Panel Width, Opacity, and Blur Customizations
+  const [aiPanelWidth, setAiPanelWidth] = useState(() => {
+    const saved = localStorage.getItem('livecollab_ai_width');
+    return saved !== null ? parseInt(saved, 10) : 320;
+  });
+  const [aiPanelOpacity, setAiPanelOpacity] = useState(() => {
+    const saved = localStorage.getItem('livecollab_ai_opacity');
+    return saved !== null ? parseFloat(saved) : 0.75;
+  });
+  const [aiPanelBlur, setAiPanelBlur] = useState(() => {
+    const saved = localStorage.getItem('livecollab_ai_blur');
+    return saved !== null ? parseInt(saved, 10) : 16;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('livecollab_ai_width', aiPanelWidth.toString());
+  }, [aiPanelWidth]);
+
+  useEffect(() => {
+    localStorage.setItem('livecollab_ai_opacity', aiPanelOpacity.toString());
+  }, [aiPanelOpacity]);
+
+  useEffect(() => {
+    localStorage.setItem('livecollab_ai_blur', aiPanelBlur.toString());
+  }, [aiPanelBlur]);
+
+  const handleAiResizeStart = (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = aiPanelWidth;
+    
+    const handlePointerMove = (moveEvent) => {
+      const deltaX = startX - moveEvent.clientX; // dragging left increases width
+      const newWidth = Math.max(260, Math.min(800, startWidth + deltaX));
+      setAiPanelWidth(newWidth);
+    };
+    
+    const handlePointerUp = () => {
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.removeEventListener('pointerup', handlePointerUp);
+    };
+    
+    document.addEventListener('pointermove', handlePointerMove);
+    document.addEventListener('pointerup', handlePointerUp);
+  };
+
   const boardRef = useRef(null);
   const canvasRef = useRef(null);
   const overlayCanvasRef = useRef(null);
@@ -1962,32 +2008,79 @@ const Room = () => {
 
         {/* Right Sidebar - AI Assistant */}
         {isAiPanelOpen && (
-          <aside className="glass-panel right-sidebar">
+          <aside 
+            className="glass-panel right-sidebar"
+            style={{
+              width: `${aiPanelWidth}px`,
+              background: theme === 'dark' ? `rgba(11, 15, 25, ${aiPanelOpacity})` : `rgba(255, 255, 255, ${aiPanelOpacity})`,
+              backdropFilter: `blur(${aiPanelBlur}px)`,
+              WebkitBackdropFilter: `blur(${aiPanelBlur}px)`
+            }}
+          >
+            <div 
+              className="sidebar-resize-handle"
+              onPointerDown={handleAiResizeStart}
+            />
             <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h3><Sparkles size={18} className="text-gradient" style={{marginRight: '0.5rem'}} /> LiveCollab AI</h3>
               <button 
-                title="Gemini API Key Settings"
+                title="AI Panel Settings"
                 onClick={() => setShowApiKeySetting(!showApiKeySetting)} 
                 style={{ color: 'var(--text-secondary)', padding: '4px', cursor: 'pointer' }}
                 className="bounce-hover"
               >
-                <Key size={16} className={(geminiApiKey || hasBackendKey) ? "text-gradient" : ""} />
+                <Settings size={16} className={(geminiApiKey || hasBackendKey) ? "text-gradient" : ""} />
               </button>
             </div>
             
             {((!geminiApiKey && !hasBackendKey) || showApiKeySetting) ? (
-              <div className="ai-key-config" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1, overflowY: 'auto' }}>
-                <h4 style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Key size={16} className="text-gradient" /> Gemini API Settings
+              <div className="ai-key-config" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.2rem', flex: 1, overflowY: 'auto' }}>
+                <h4 style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
+                  <Settings size={16} className="text-gradient" /> Panel Settings
                 </h4>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-                  Connect your Google Gemini API Key to enable real-time whiteboard analysis, dynamic summaries, task extraction, and ask general knowledge questions.
-                </p>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                  Get a free key from <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'underline' }}>Google AI Studio</a>.
-                </div>
                 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
+                {/* Transparency Slider */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                    <span>Panel Opacity</span>
+                    <span style={{ fontWeight: 600, color: 'var(--accent-primary)' }}>{Math.round(aiPanelOpacity * 100)}%</span>
+                  </div>
+                  <input 
+                    type="range"
+                    min="0.05"
+                    max="1.0"
+                    step="0.05"
+                    value={aiPanelOpacity}
+                    onChange={(e) => setAiPanelOpacity(parseFloat(e.target.value))}
+                    style={{ width: '100%', cursor: 'pointer' }}
+                  />
+                </div>
+
+                {/* Blur Slider */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                    <span>Glass Blur Strength</span>
+                    <span style={{ fontWeight: 600, color: 'var(--accent-primary)' }}>{aiPanelBlur}px</span>
+                  </div>
+                  <input 
+                    type="range"
+                    min="0"
+                    max="30"
+                    step="1"
+                    value={aiPanelBlur}
+                    onChange={(e) => setAiPanelBlur(parseInt(e.target.value))}
+                    style={{ width: '100%', cursor: 'pointer' }}
+                  />
+                </div>
+
+                <hr style={{ border: 'none', borderBottom: '1px solid rgba(255, 255, 255, 0.1)', margin: '0.5rem 0' }} />
+
+                <h5 style={{ fontWeight: 600, margin: 0, fontSize: '0.85rem' }}>Gemini API Config</h5>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4, margin: 0 }}>
+                  If not configured on Render, enter a key starting with `AQ` or `AIzaSy`.
+                </p>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   <input 
                     type="password" 
                     placeholder={geminiApiKey ? "••••••••••••••••" : "Paste your API key here..."} 
@@ -1996,7 +2089,7 @@ const Room = () => {
                     className="input-glass"
                     style={{ width: '100%' }}
                   />
-                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.3rem' }}>
                     <button 
                       onClick={() => {
                         if (tempApiKey.trim()) {
@@ -2019,26 +2112,26 @@ const Room = () => {
                           setTempApiKey('');
                         }} 
                         className="btn-danger" 
-                        style={{ flex: 1, padding: '0.5rem 1rem', fontSize: '0.85rem', background: 'rgba(239, 68, 68, 0.1)' }}
+                        style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', background: 'rgba(239, 68, 68, 0.1)', flex: 1 }}
                       >
                         Clear Key
                       </button>
                     )}
                   </div>
                 </div>
-                
-                {geminiApiKey && (
+
+                <div style={{ marginTop: 'auto', display: 'flex', gap: '0.5rem' }}>
                   <button 
                     onClick={() => {
                       setShowApiKeySetting(false);
                       setTempApiKey('');
                     }} 
                     className="btn-secondary" 
-                    style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', width: '100%', marginTop: 'auto' }}
+                    style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', width: '100%' }}
                   >
-                    Cancel
+                    Done
                   </button>
-                )}
+                </div>
               </div>
             ) : (
               <>
