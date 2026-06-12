@@ -191,6 +191,44 @@ async function handleCreateRoom(req, res) {
 app.post('/room', handleCreateRoom);
 app.post('/api/room', handleCreateRoom);
 
+app.post('/api/ai', async (req, res) => {
+  const { prompt } = req.body;
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return res.status(400).json({ error: 'Gemini API key is not configured on the backend.' });
+  }
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: prompt }]
+          }
+        ]
+      })
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      return res.status(response.status).json({ error: err?.error?.message || 'Gemini API call failed' });
+    }
+    const data = await response.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response text received from Gemini.';
+    return res.json({ text });
+  } catch (err) {
+    console.error('Gemini API proxy error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/ai/status', (req, res) => {
+  return res.json({ hasKey: !!process.env.GEMINI_API_KEY });
+});
+
 app.get('/api/room/:roomId', async (req, res) => {
   const roomId = (req.params.roomId || '').trim().toUpperCase();
   if (!roomId) {

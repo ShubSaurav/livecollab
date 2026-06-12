@@ -8,7 +8,7 @@ import {
   Link, UserPlus, MoreHorizontal, Maximize2, Trash2, Send, Download, Grid,
   Zap, GripHorizontal, Sun, Moon, X, Key
 } from 'lucide-react';
-import { wsBaseUrl } from '../config';
+import { wsBaseUrl, apiBaseUrl } from '../config';
 import { ThemeContext } from '../App';
 import './Room.css';
 
@@ -269,6 +269,7 @@ const Room = () => {
   });
   const [tempApiKey, setTempApiKey] = useState('');
   const [showApiKeySetting, setShowApiKeySetting] = useState(false);
+  const [hasBackendKey, setHasBackendKey] = useState(false);
 
   const boardRef = useRef(null);
   const canvasRef = useRef(null);
@@ -319,6 +320,18 @@ const Room = () => {
   useEffect(() => {
     drawActionsRef.current = drawActions;
   }, [drawActions]);
+
+  // Check if backend has Gemini API key configured
+  useEffect(() => {
+    fetch(`${apiBaseUrl}/api/ai/status`)
+      .then(res => res.json())
+      .then(data => {
+        if (data && typeof data.hasKey === 'boolean') {
+          setHasBackendKey(data.hasKey);
+        }
+      })
+      .catch(err => console.warn('Failed to fetch backend AI key status', err));
+  }, []);
 
   // WebSockets Setup
   useEffect(() => {
@@ -881,26 +894,26 @@ const Room = () => {
     
     const lowerPrompt = promptType.toLowerCase();
 
+    let systemContext = `You are the LiveCollab AI Assistant, a helpful workspace partner integrated into a collaborative whiteboard room (Room ID: "${roomId}").
+    You have access to the current state of the board:
+    - Drawings: ${drawingsCount} sketches/shapes drawn on the canvas.
+    - Sticky Notes: ${notesCount} active stickies. Content of stickies: ${JSON.stringify(stickyTexts)}.
+    - Recent chat logs: ${JSON.stringify(messages.filter(m => m.type === 'chat').slice(-10).map(m => m.text))}.
+
+    The user may ask you to summarize the board, extract tasks/todos, create meeting notes, or ask any general question (just like general Gemini AI).
+    Use clear, beautiful markdown formatting. Keep your tone professional, collaborative, and friendly.`;
+
+    let prompt = promptType;
+    if (promptType === 'summary') {
+      prompt = 'Please summarize the current state of our whiteboard room and active discussions.';
+    } else if (promptType === 'tasks') {
+      prompt = 'Please extract action items and checklist tasks from the sticky notes in this whiteboard room.';
+    } else if (promptType === 'notes') {
+      prompt = 'Please generate meeting minutes and notes from our whiteboard room, detailing discussions and next steps.';
+    }
+
     if (geminiApiKey) {
       try {
-        let systemContext = `You are the LiveCollab AI Assistant, a helpful workspace partner integrated into a collaborative whiteboard room (Room ID: "${roomId}").
-You have access to the current state of the board:
-- Drawings: ${drawingsCount} sketches/shapes drawn on the canvas.
-- Sticky Notes: ${notesCount} active stickies. Content of stickies: ${JSON.stringify(stickyTexts)}.
-- Recent chat logs: ${JSON.stringify(messages.filter(m => m.type === 'chat').slice(-10).map(m => m.text))}.
-
-The user may ask you to summarize the board, extract tasks/todos, create meeting notes, or ask any general question (just like general Gemini AI).
-Use clear, beautiful markdown formatting. Keep your tone professional, collaborative, and friendly.`;
-
-        let prompt = promptType;
-        if (promptType === 'summary') {
-          prompt = 'Please summarize the current state of our whiteboard room and active discussions.';
-        } else if (promptType === 'tasks') {
-          prompt = 'Please extract action items and checklist tasks from the sticky notes in this whiteboard room.';
-        } else if (promptType === 'notes') {
-          prompt = 'Please generate meeting minutes and notes from our whiteboard room, detailing discussions and next steps.';
-        }
-
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
           method: 'POST',
           headers: {
@@ -930,6 +943,26 @@ Use clear, beautiful markdown formatting. Keep your tone professional, collabora
         fullText = `### Gemini API Error ⚠️\n\nFailed to get a response from Gemini AI. Please check your API key and network connection.\n\n**Details**: ${err.message}`;
       }
     } else {
+      try {
+        const res = await fetch(`${apiBaseUrl}/api/ai`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            prompt: `${systemContext}\n\nUser Question: ${prompt}`
+          })
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData?.error || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        fullText = data.text;
+      } catch (backendErr) {
+        console.warn('Backend AI proxy failed or was unconfigured. Running local simulation.', backendErr);
       if (promptType === 'summary' || lowerPrompt.includes('summary') || lowerPrompt.includes('summarize') || lowerPrompt.includes('board')) {
         fullText = `### LiveCollab Workspace Summary 📊\n\nI have scanned the active canvas, sticky elements, and team chat:\n* **Whiteboard Details**: Detected **${drawingsCount} sketches/shapes** drawn on the board.\n* **Sticky Workspace**: Identified **${notesCount} active sticky notes**.\n* **Collaboration Hub**: Exchanged **${chatMsgCount} team chat logs** in this room.\n\n#### Key Focus Areas:\n1. **Dynamic Whiteboarding**: Concentration of visual sketches suggests active mockup layout iteration.\n2. **Draggable Tasks**: Sticky elements map structural dependencies. ${stickyTexts.length > 0 ? `The team is discussing: ${stickyTexts.map(t => `"${t}"`).join(', ')}.` : 'No custom tasks written on stickies yet.'}`;
       } else if (promptType === 'tasks' || lowerPrompt.includes('task') || lowerPrompt.includes('todo') || lowerPrompt.includes('checklist')) {
@@ -963,6 +996,7 @@ Use clear, beautiful markdown formatting. Keep your tone professional, collabora
             fullText = `I scanned the board for "${promptType}" but it is currently empty. Please drop some sticky notes or draw on the whiteboard, then ask me to summarize, extract tasks, or draft meeting notes!`;
           }
         }
+      }
       }
     }
 
@@ -1736,11 +1770,11 @@ Use clear, beautiful markdown formatting. Keep your tone professional, collabora
                 style={{ color: 'var(--text-secondary)', padding: '4px', cursor: 'pointer' }}
                 className="bounce-hover"
               >
-                <Key size={16} className={geminiApiKey ? "text-gradient" : ""} />
+                <Key size={16} className={(geminiApiKey || hasBackendKey) ? "text-gradient" : ""} />
               </button>
             </div>
             
-            {(!geminiApiKey || showApiKeySetting) ? (
+            {((!geminiApiKey && !hasBackendKey) || showApiKeySetting) ? (
               <div className="ai-key-config" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1, overflowY: 'auto' }}>
                 <h4 style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <Key size={16} className="text-gradient" /> Gemini API Settings
