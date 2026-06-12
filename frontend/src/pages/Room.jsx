@@ -851,7 +851,7 @@ const Room = () => {
     let charIndex = 0;
     const interval = setInterval(() => {
       if (charIndex < fullText.length) {
-        currentText += fullText[charIndex];
+        currentText += fullText.substring(charIndex, charIndex + 4);
         setAiMessages(prev => {
           const next = [...prev];
           next[next.length - 1] = { role: 'assistant', text: currentText };
