@@ -265,6 +265,30 @@ app.get('/api/room/:roomId', async (req, res) => {
     }
   }
 
+  // Auto-create room in memory if it doesn't exist (allows joining by room code even if MongoDB is down)
+  // Validate room code format (alphanumeric, 4-12 chars)
+  if (/^[A-Z0-9]{4,12}$/.test(roomId)) {
+    roomsMap.set(roomId, {
+      title: `Room ${roomId}`,
+      clients: new Set(),
+      history: [],
+      drawActions: [],
+      stickyNotes: [],
+      peakParticipants: 0
+    });
+    console.log(`Room auto-created on join lookup: ${roomId}`);
+    return res.json({
+      success: true,
+      exists: true,
+      room: {
+        id: roomId,
+        title: `Room ${roomId}`,
+        active: true,
+        participantCount: 0
+      }
+    });
+  }
+
   return res.status(404).json({ success: false, exists: false, error: 'Room not found' });
 });
 
@@ -319,6 +343,17 @@ app.get('/api/history', async (req, res) => {
   }
 });
 
+// Send a message to a specific client in a room by clientId
+function sendToClient(roomId, targetClientId, message) {
+  if (!roomsMap.has(roomId)) return;
+  const room = roomsMap.get(roomId);
+  if (!room.clientMap) return;
+  const targetWs = room.clientMap.get(targetClientId);
+  if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+    targetWs.send(JSON.stringify(message));
+  }
+}
+
 // WebSocket Handler
 wss.on('connection', (ws, req) => {
   let currentRoom = null;
@@ -328,11 +363,16 @@ wss.on('connection', (ws, req) => {
     try {
       const data = JSON.parse(messageAsString);
       switch (data.type) {
-        case 'join':
-          if (roomsMap.has(data.roomId)) {
-            currentRoom = data.roomId;
+        case 'join': {
+          const targetRoomId = (data.roomId || '').trim().toUpperCase();
+          if (roomsMap.has(targetRoomId)) {
+            currentRoom = targetRoomId;
             const roomData = roomsMap.get(currentRoom);
             roomData.clients.add(ws);
+            if (!roomData.clientMap) roomData.clientMap = new Map();
+            // Send list of existing peer IDs to new client BEFORE adding them
+            const existingPeerIds = Array.from(roomData.clientMap.keys());
+            roomData.clientMap.set(clientId, ws);
             roomData.peakParticipants = Math.max(roomData.peakParticipants || 0, roomData.clients.size);
             
             ws.send(JSON.stringify({ 
@@ -341,7 +381,8 @@ wss.on('connection', (ws, req) => {
               roomId: currentRoom,
               history: roomData.history || [],
               drawActions: roomData.drawActions || [],
-              stickyNotes: roomData.stickyNotes || []
+              stickyNotes: roomData.stickyNotes || [],
+              existingPeers: existingPeerIds
             }));
             
             broadcast(currentRoom, {
@@ -350,39 +391,73 @@ wss.on('connection', (ws, req) => {
               message: `User ${clientId} joined the room`
             }, ws);
           } else {
-            // Check DB
+            // Room not in memory - check DB, or auto-create if DB is unavailable
+            const autoCreateAndJoin = () => {
+              const rid = targetRoomId;
+              const clientMap = new Map();
+              clientMap.set(clientId, ws);
+              roomsMap.set(rid, {
+                title: `Room ${rid}`,
+                clients: new Set([ws]),
+                clientMap,
+                history: [],
+                drawActions: [],
+                stickyNotes: [],
+                peakParticipants: 1
+              });
+              currentRoom = rid;
+              console.log(`Room auto-created on WS join: ${rid}`);
+              ws.send(JSON.stringify({ 
+                type: 'joined', 
+                clientId, 
+                roomId: currentRoom, 
+                history: [],
+                drawActions: [],
+                stickyNotes: [],
+                existingPeers: []
+              }));
+            };
+
             if (mongoose.connection.readyState === 1) {
-              Room.findOne({ roomId: data.roomId }).then(dbRoom => {
+              Room.findOne({ roomId: targetRoomId }).then(dbRoom => {
                  if(dbRoom) {
-                    roomsMap.set(data.roomId, {
+                    const clientMap = new Map();
+                    clientMap.set(clientId, ws);
+                    roomsMap.set(targetRoomId, {
                        title: dbRoom.title,
                        clients: new Set([ws]),
+                       clientMap,
                        history: [],
                        drawActions: [],
                        stickyNotes: [],
                        peakParticipants: 1
                     });
-                    currentRoom = data.roomId;
+                    currentRoom = targetRoomId;
                     ws.send(JSON.stringify({ 
                       type: 'joined', 
                       clientId, 
                       roomId: currentRoom, 
                       history: [],
                       drawActions: [],
-                      stickyNotes: [] 
+                      stickyNotes: [],
+                      existingPeers: []
                     }));
                  } else {
-                    ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }));
+                    // Room not found in DB either — auto-create in memory
+                    autoCreateAndJoin();
                  }
               }).catch(err => {
                  console.error('Error finding room in DB:', err);
-                 ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }));
+                 // DB error — auto-create in memory as fallback
+                 autoCreateAndJoin();
               });
             } else {
-              ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }));
+              // MongoDB offline — auto-create room in memory
+              autoCreateAndJoin();
             }
           }
           break;
+        }
           
         case 'chat':
         case 'cursor':
@@ -403,6 +478,14 @@ wss.on('connection', (ws, req) => {
               if (!room.drawActions) room.drawActions = [];
               room.drawActions.push(data.action);
             }
+          }
+          break;
+
+        case 'draw_sync':
+          if (currentRoom && roomsMap.has(currentRoom)) {
+            const room = roomsMap.get(currentRoom);
+            room.drawActions = data.drawActions || [];
+            broadcast(currentRoom, { ...data, senderId: clientId }, ws);
           }
           break;
 
@@ -445,6 +528,21 @@ wss.on('connection', (ws, req) => {
           }
           break;
 
+        case 'webrtc-offer':
+        case 'webrtc-answer':
+        case 'webrtc-ice-candidate':
+          // Forward WebRTC signaling to the target peer
+          if (currentRoom && data.targetId) {
+            sendToClient(currentRoom, data.targetId, {
+              type: data.type,
+              senderId: clientId,
+              offer: data.offer,
+              answer: data.answer,
+              candidate: data.candidate
+            });
+          }
+          break;
+
         default:
           // For generic real-time events that don't need database persistence (e.g., raise_hand, media_update)
           if (currentRoom && roomsMap.has(currentRoom)) {
@@ -461,6 +559,7 @@ wss.on('connection', (ws, req) => {
     if (currentRoom && roomsMap.has(currentRoom)) {
       const roomData = roomsMap.get(currentRoom);
       roomData.clients.delete(ws);
+      if (roomData.clientMap) roomData.clientMap.delete(clientId);
       
       broadcast(currentRoom, { type: 'user_left', clientId });
       

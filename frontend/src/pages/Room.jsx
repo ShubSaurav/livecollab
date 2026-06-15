@@ -209,13 +209,14 @@ const renderMarkdown = (text) => {
 };
 
 const Room = () => {
-  const { roomId } = useParams();
+  const { roomId: rawRoomId } = useParams();
+  const roomId = (rawRoomId || '').trim().toUpperCase();
   const navigate = useNavigate();
   const { theme, toggleTheme } = useContext(ThemeContext);
   
   const [activeLeftTab, setActiveLeftTab] = useState('chat');
   const [activeTool, setActiveTool] = useState('pen'); // default to pen drawing
-  const [showBrushPanel, setShowBrushPanel] = useState(true);
+  const [showBrushPanel, setShowBrushPanel] = useState(false);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(true);
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
   const [isToolbarOpen, setIsToolbarOpen] = useState(true);
@@ -223,7 +224,7 @@ const Room = () => {
   const [isDraggingToolbar, setIsDraggingToolbar] = useState(false);
   const [videoStripPosition, setVideoStripPosition] = useState(null); // start centered
   const [isDraggingVideoStrip, setIsDraggingVideoStrip] = useState(false);
-  const [isVideoStripVisible, setIsVideoStripVisible] = useState(true);
+  const [isVideoStripVisible, setIsVideoStripVisible] = useState(false);
   const [laserPaths, setLaserPaths] = useState([]);
   
   // Unread badge states for floating overlays
@@ -241,6 +242,7 @@ const Room = () => {
   const [cursors, setCursors] = useState({});
   const [clientId, setClientId] = useState('');
   const [roomUsers, setRoomUsers] = useState(1);
+  const [peers, setPeers] = useState([]);
   const [joinError, setJoinError] = useState('');
   
   const [mediaState, setMediaState] = useState({
@@ -258,6 +260,13 @@ const Room = () => {
   const localStreamRef = useRef(null);
   const localVideoRef = useRef(null);
   const [hasCameraPermission, setHasCameraPermission] = useState(false);
+
+  // WebRTC Peer Connections
+  const peerConnectionsRef = useRef(new Map()); // peerId -> RTCPeerConnection
+  const [remoteStreams, setRemoteStreams] = useState({}); // peerId -> MediaStream
+  const pendingCandidatesRef = useRef(new Map()); // peerId -> ICE candidates queued before remote description set
+  const clientIdRef = useRef('');
+  const wsRef = useRef(null);
 
   // Screen Share Window Refs & States
   const [screenStream, setScreenStream] = useState(null);
@@ -392,7 +401,7 @@ const Room = () => {
   const getVideoStripStyle = () => {
     if (!videoStripPosition) {
       return {
-        top: '1rem',
+        bottom: '1rem',
         left: '50%',
         transform: 'translateX(-50%)',
         position: 'absolute'
@@ -595,6 +604,7 @@ const Room = () => {
       if (data.type === 'joined') {
         setJoinError('');
         setClientId(data.clientId);
+        clientIdRef.current = data.clientId;
         if (data.history && data.history.length > 0) {
           setMessages(data.history);
         }
@@ -605,6 +615,14 @@ const Room = () => {
         }
         if (data.stickyNotes) {
           setStickyNotes(data.stickyNotes);
+        }
+        // Connect to existing peers via WebRTC
+        if (data.existingPeers && data.existingPeers.length > 0) {
+          setPeers(data.existingPeers);
+          setRoomUsers(data.existingPeers.length + 1);
+          data.existingPeers.forEach(peerId => {
+            connectToPeer(peerId);
+          });
         }
       } else if (data.type === 'error') {
         setJoinError(data.message || 'Unable to join room');
@@ -621,9 +639,12 @@ const Room = () => {
           [data.senderId]: { x: data.x, y: data.y }
         }));
       } else if (data.type === 'user_joined') {
+        setPeers(prev => [...prev.filter(id => id !== data.clientId), data.clientId]);
         setRoomUsers(prev => prev + 1);
         setMessages(prev => [...prev, { type: 'system', text: data.message }]);
+        // The newly joined user will send us an offer, so we wait for it
       } else if (data.type === 'user_left') {
+        setPeers(prev => prev.filter(id => id !== data.clientId));
         setRoomUsers(prev => Math.max(1, prev - 1));
         setMessages(prev => [...prev, { type: 'system', text: `User ${data.clientId.slice(0,4)} left the room` }]);
         
@@ -633,6 +654,14 @@ const Room = () => {
           delete next[data.clientId];
           return next;
         });
+        // Cleanup WebRTC peer connection for left user
+        cleanupPeer(data.clientId);
+      } else if (data.type === 'webrtc-offer') {
+        handleWebRTCOffer(data.senderId, data.offer);
+      } else if (data.type === 'webrtc-answer') {
+        handleWebRTCAnswer(data.senderId, data.answer);
+      } else if (data.type === 'webrtc-ice-candidate') {
+        handleICECandidate(data.senderId, data.candidate);
       } else if (data.type === 'laser') {
         setLaserPaths(prev => [
           ...prev.filter(trail => trail.id !== data.senderId),
@@ -694,8 +723,12 @@ const Room = () => {
     };
 
     setWs(socket);
+    wsRef.current = socket;
 
-    return () => socket.close();
+    return () => {
+      cleanupAllPeers();
+      socket.close();
+    };
   }, [roomId, navigate]);
 
   // Handle Resize and Initial Canvas Setup (Optimized to prevent flickering)
@@ -1381,6 +1414,216 @@ const Room = () => {
     }
   };
 
+  // ========== WebRTC Peer Connection Logic ==========
+  const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' }
+  ];
+
+  const createPeerConnection = (peerId) => {
+    // If we have an existing healthy peer connection, reuse it
+    let pc = peerConnectionsRef.current.get(peerId);
+    if (pc && pc.connectionState !== 'closed' && pc.connectionState !== 'failed') {
+      return pc;
+    }
+
+    if (pc) {
+      pc.close();
+    }
+
+    pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+    // Send ICE candidates to the remote peer via signaling
+    pc.onicecandidate = (event) => {
+      if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'webrtc-ice-candidate',
+          targetId: peerId,
+          candidate: event.candidate
+        }));
+      }
+    };
+
+    // Handle incoming remote media tracks
+    pc.ontrack = (event) => {
+      setRemoteStreams(prev => {
+        const existingStream = prev[peerId] || new MediaStream();
+        if (!existingStream.getTracks().includes(event.track)) {
+          existingStream.addTrack(event.track);
+        }
+        return { ...prev, [peerId]: existingStream };
+      });
+      // Auto-show video strip when remote stream arrives
+      setIsVideoStripVisible(true);
+    };
+
+    // Handle connection state changes
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        cleanupPeer(peerId);
+      }
+    };
+
+    // Add local tracks if available
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => {
+        pc.addTrack(track, localStreamRef.current);
+      });
+    }
+
+    peerConnectionsRef.current.set(peerId, pc);
+    pendingCandidatesRef.current.set(peerId, []);
+    return pc;
+  };
+
+  // Initiate a connection to a peer (called by the existing user when a new user joins)
+  const connectToPeer = async (peerId) => {
+    try {
+      const pc = createPeerConnection(peerId);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'webrtc-offer',
+          targetId: peerId,
+          offer: pc.localDescription
+        }));
+      }
+    } catch (err) {
+      console.error('Error creating WebRTC offer:', err);
+    }
+  };
+
+  // Handle incoming WebRTC offer
+  const handleWebRTCOffer = async (senderId, offer) => {
+    try {
+      const pc = createPeerConnection(senderId);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      
+      // Flush any pending ICE candidates
+      const pending = pendingCandidatesRef.current.get(senderId) || [];
+      for (const candidate of pending) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+      pendingCandidatesRef.current.set(senderId, []);
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'webrtc-answer',
+          targetId: senderId,
+          answer: pc.localDescription
+        }));
+      }
+    } catch (err) {
+      console.error('Error handling WebRTC offer:', err);
+    }
+  };
+
+  // Handle incoming WebRTC answer
+  const handleWebRTCAnswer = async (senderId, answer) => {
+    try {
+      const pc = peerConnectionsRef.current.get(senderId);
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        
+        // Flush any pending ICE candidates
+        const pending = pendingCandidatesRef.current.get(senderId) || [];
+        for (const candidate of pending) {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+        pendingCandidatesRef.current.set(senderId, []);
+      }
+    } catch (err) {
+      console.error('Error handling WebRTC answer:', err);
+    }
+  };
+
+  // Handle incoming ICE candidate
+  const handleICECandidate = async (senderId, candidate) => {
+    try {
+      const pc = peerConnectionsRef.current.get(senderId);
+      if (pc && pc.remoteDescription) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } else {
+        // Queue candidates until remote description is set
+        if (!pendingCandidatesRef.current.has(senderId)) {
+          pendingCandidatesRef.current.set(senderId, []);
+        }
+        pendingCandidatesRef.current.get(senderId).push(candidate);
+      }
+    } catch (err) {
+      console.error('Error adding ICE candidate:', err);
+    }
+  };
+
+  // Add/replace local tracks on all existing peer connections (when camera/mic is toggled)
+  const addLocalTracksToPeers = async () => {
+    const stream = localStreamRef.current;
+    if (!stream) return;
+
+    for (const [peerId, pc] of peerConnectionsRef.current.entries()) {
+      const senders = pc.getSenders();
+      let needsNegotiation = false;
+      
+      stream.getTracks().forEach(track => {
+        const existingSender = senders.find(s => s.track && s.track.kind === track.kind);
+        if (existingSender) {
+          existingSender.replaceTrack(track);
+        } else {
+          pc.addTrack(track, stream);
+          needsNegotiation = true;
+        }
+      });
+
+      if (needsNegotiation) {
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({
+              type: 'webrtc-offer',
+              targetId: peerId,
+              offer: pc.localDescription
+            }));
+          }
+        } catch (err) {
+          console.error(`Error renegotiating with peer ${peerId}:`, err);
+        }
+      }
+    }
+  };
+
+  // Cleanup a single peer connection
+  const cleanupPeer = (peerId) => {
+    const pc = peerConnectionsRef.current.get(peerId);
+    if (pc) {
+      pc.close();
+      peerConnectionsRef.current.delete(peerId);
+    }
+    pendingCandidatesRef.current.delete(peerId);
+    setRemoteStreams(prev => {
+      const next = { ...prev };
+      delete next[peerId];
+      return next;
+    });
+  };
+
+  // Cleanup all peer connections
+  const cleanupAllPeers = () => {
+    peerConnectionsRef.current.forEach((pc) => pc.close());
+    peerConnectionsRef.current.clear();
+    pendingCandidatesRef.current.clear();
+    setRemoteStreams({});
+  };
+  // ========== End WebRTC Logic ==========
+
   const initMediaStream = async (audioEnabled, videoEnabled) => {
     try {
       if (localStreamRef.current) {
@@ -1397,6 +1640,7 @@ const Room = () => {
       stream.getVideoTracks().forEach(t => t.enabled = videoEnabled);
       
       setHasCameraPermission(true);
+      await addLocalTracksToPeers();
     } catch (err) {
       console.warn("Could not access camera/mic:", err);
       setHasCameraPermission(false);
@@ -1421,6 +1665,10 @@ const Room = () => {
       } else if (nextMicState) {
         await initMediaStream(nextMicState, mediaState.camera);
       }
+      // Auto-show video strip when mic is on
+      if (nextMicState) setIsVideoStripVisible(true);
+      // Auto-hide when both mic and camera are off
+      if (!nextMicState && !mediaState.camera) setIsVideoStripVisible(false);
     } else if (type === 'camera') {
       const nextCamState = !mediaState.camera;
       setMediaState(prev => ({ ...prev, camera: nextCamState }));
@@ -1432,6 +1680,10 @@ const Room = () => {
       } else if (nextCamState) {
         await initMediaStream(mediaState.mic, nextCamState);
       }
+      // Auto-show video strip when camera is on
+      if (nextCamState) setIsVideoStripVisible(true);
+      // Auto-hide when both mic and camera are off
+      if (!nextCamState && !mediaState.mic) setIsVideoStripVisible(false);
     } else if (type === 'screen') {
       if (mediaState.screen) {
         stopScreenShare();
@@ -1783,19 +2035,41 @@ const Room = () => {
                 </div>
               </div>
 
-              {/* Remote Video Tile */}
-              {roomUsers > 1 && (
-                <div className={`video-tile bounce-hover ${Object.keys(raisedHands).some(id => raisedHands[id]) ? 'raised-hand-glow' : ''}`}>
-                  <div className="video-placeholder other-cam">U1</div>
-                  <div className="tile-name">
-                    Remote <MicOff size={11} className="text-secondary" style={{marginLeft: '4px'}}/>
-                    {Object.keys(raisedHands).some(id => raisedHands[id]) && <span className="hand-badge" style={{marginLeft: '6px'}}>✋</span>}
+              {/* Remote Video Tiles */}
+              {peers.map((peerId) => {
+                const stream = remoteStreams[peerId];
+                const hasVideo = stream && stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled;
+                const isMuted = !stream || stream.getAudioTracks().length === 0 || !stream.getAudioTracks()[0].enabled;
+                const isHandRaised = raisedHands[peerId];
+
+                return (
+                  <div key={peerId} className={`video-tile bounce-hover ${isHandRaised ? 'raised-hand-glow' : ''}`}>
+                    {hasVideo ? (
+                      <video 
+                        ref={el => {
+                          if (el && el.srcObject !== stream) {
+                            el.srcObject = stream;
+                          }
+                        }}
+                        autoPlay 
+                        playsInline 
+                        className="video-feed" 
+                      />
+                    ) : (
+                      <div className="video-placeholder other-cam">
+                        {peerId.slice(0, 4).toUpperCase()}
+                      </div>
+                    )}
+                    <div className="tile-name">
+                      User {peerId.slice(0, 4).toUpperCase()}
+                      {isMuted && <MicOff size={11} style={{marginLeft:'4px'}} color="#ef4444"/>}
+                      {isHandRaised && <span className="hand-badge" style={{marginLeft: '6px'}}>✋</span>}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })}
             </div>
           )}
-
           {/* Interactive HTML5 drawing board & sticky notes overlay */}
           <div className="whiteboard-wrapper" ref={boardRef}>
             <canvas 

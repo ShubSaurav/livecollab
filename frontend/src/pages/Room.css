@@ -226,7 +226,7 @@
 /* Video Strip */
 .video-strip {
   position: absolute;
-  top: 1rem;
+  bottom: 1rem;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
